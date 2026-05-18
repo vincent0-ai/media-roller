@@ -41,6 +41,7 @@ func main() {
 
 	media.GetInstalledVersion()
 	go startYtDlpUpdater()
+	go media.StartCacheCleanup()
 
 	// The HTTP Server
 	server := &http.Server{Addr: ":3000", Handler: router}

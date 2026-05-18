@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 /**
@@ -180,6 +181,7 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 	if isAudioOnly {
 		defaultArgs["--format"] = "bestaudio[ext=m4a]/bestaudio/best"
 		defaultArgs["--audio-format"] = "mp3"
+		defaultArgs["--audio-quality"] = "128K"
 	} else {
 		defaultArgs["--format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 		defaultArgs["--merge-output-format"] = "mp4"
@@ -365,4 +367,54 @@ func getEnvVars() map[string]string {
 		vars["--proxy"] = ev
 	}
 	return vars
+}
+
+// CleanOldCache deletes downloaded media directories older than 1 day
+func CleanOldCache() {
+	log.Info().Msg("Starting cache cleanup...")
+	entries, err := os.ReadDir(downloadDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Error().Err(err).Msg("Failed to read download directory for cleanup")
+		}
+		return
+	}
+
+	threshold := time.Now().Add(-24 * time.Hour)
+	count := 0
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		if info.ModTime().Before(threshold) {
+			dirPath := filepath.Join(downloadDir, entry.Name())
+			if err := os.RemoveAll(dirPath); err != nil {
+				log.Error().Err(err).Msgf("Failed to delete old cache directory: %s", dirPath)
+			} else {
+				log.Info().Msgf("Deleted old cache directory: %s", dirPath)
+				count++
+			}
+		}
+	}
+	log.Info().Msgf("Cache cleanup complete. Removed %d old directories.", count)
+}
+
+// StartCacheCleanup runs the cleanup routine once a day
+func StartCacheCleanup() {
+	// Run once on startup
+	CleanOldCache()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	go func() {
+		for range ticker.C {
+			CleanOldCache()
+		}
+	}()
 }

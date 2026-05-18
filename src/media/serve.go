@@ -37,41 +37,21 @@ func streamFileToClientById(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string) {
-	// Check if file exists and open
-	openfile, err := os.Open(filename)
-	if err != nil {
-		//File not found, send 404
+	// Check if file exists
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		log.Error().Msgf("error opening file %s: %v", filename, err)
 		http.Error(w, "File not found.", 404)
 		return
 	}
-	defer openfile.Close()
 
-	// Get the Content-Type of the file
-	// Create a buffer to store the header of the file in
-	fileHeader := make([]byte, 100)
-	//Copy the headers into the FileHeader buffer
-	if _, err = openfile.Read(fileHeader); err != nil {
-		log.Error().Msgf("File not found, couldn't open for reading at %s %v", filename, err)
-		http.Error(w, "File not found", 404)
-		return
-	}
-
-	// Get content type of file
-	fileContentType := http.DetectContentType(fileHeader)
-
-	// Send the headers
-	w.Header().Set("Content-Disposition", "filename="+filepath.Base(filename))
-	w.Header().Set("Content-Type", fileContentType)
+	// Tell Cloudflare and browsers to cache this media for 7 days
+	w.Header().Set("Cache-Control", "public, max-age=604800")
+	
+	// Set Content-Disposition to inline for native browser playback
+	w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(filename)+"\"")
 
 	log.Info().Msgf("Opening file for streaming %s", filename)
 
-	// Send the file
-	// We read n bytes from the file already, so we reset the offset back to 0
-	if _, err = openfile.Seek(0, 0); err != nil {
-		log.Error().Msgf("Error seeking into file %s %v", filename, err)
-		http.Error(w, "File not found", 404)
-		return
-	}
+	// Serve the file; this natively handles Content-Type sniffing and HTTP Range requests (Partial Content 206)
 	http.ServeFile(w, r, filename)
 }
