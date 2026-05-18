@@ -32,6 +32,7 @@ type Media struct {
 	Name        string
 	SizeInBytes int64
 	HumanSize   string
+	IsAudio     bool
 }
 
 var fetchIndexTmpl = template.Must(template.ParseFiles("templates/media/index.html"))
@@ -53,12 +54,20 @@ func Index(w http.ResponseWriter, _ *http.Request) {
 func FetchMedia(w http.ResponseWriter, r *http.Request) {
 	url, args := getUrl(r)
 
+	isAudio := false
+	if _, has := args["-x"]; has {
+		isAudio = true
+	} else if _, has := args["--extract-audio"]; has {
+		isAudio = true
+	}
+
 	media, ytdlpErrorMessage, err := getMediaResults(url, args)
 	data := map[string]any{
 		"url":          url,
 		"media":        media,
 		"error":        ytdlpErrorMessage,
 		"ytDlpVersion": CachedYtDlpVersion,
+		"isAudio":      isAudio,
 	}
 	if err != nil {
 		_ = fetchIndexTmpl.Execute(w, data)
@@ -102,6 +111,10 @@ func getUrl(r *http.Request) (string, map[string]string) {
 				args[k] = ""
 			}
 		}
+	}
+
+	if strings.ToLower(r.URL.Query().Get("audio")) == "true" {
+		args["-x"] = ""
 	}
 
 	return u, args
@@ -149,16 +162,29 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 
 	log.Info().Msgf("Downloading %s to %s", url, name)
 
+	isAudioOnly := false
+	if _, has := requestArgs["-x"]; has {
+		isAudioOnly = true
+	} else if _, has := requestArgs["--extract-audio"]; has {
+		isAudioOnly = true
+	}
+
 	defaultArgs := map[string]string{
-		"--format":              "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-		"--merge-output-format": "mp4",
-		"--trim-filenames":      "100",
-		"--recode-video":        "mp4",
-		"--format-sort":         "codec:h264",
-		"--restrict-filenames":  "",
-		"--write-info-json":     "",
-		"--verbose":             "",
-		"--output":              name,
+		"--trim-filenames":     "100",
+		"--restrict-filenames": "",
+		"--write-info-json":    "",
+		"--verbose":            "",
+		"--output":             name,
+	}
+
+	if isAudioOnly {
+		defaultArgs["--format"] = "bestaudio[ext=m4a]/bestaudio/best"
+		defaultArgs["--audio-format"] = "mp3"
+	} else {
+		defaultArgs["--format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+		defaultArgs["--merge-output-format"] = "mp4"
+		defaultArgs["--recode-video"] = "mp4"
+		defaultArgs["--format-sort"] = "codec:h264"
 	}
 
 	args := make([]string, 0)
@@ -265,11 +291,13 @@ func getAllFilesForId(id string) ([]Media, error) {
 				size = fi.Size()
 			}
 
+			lowerF := strings.ToLower(f)
 			media := Media{
 				Id:          id,
 				Name:        filepath.Base(f),
 				SizeInBytes: size,
 				HumanSize:   humanize.Bytes(uint64(size)),
+				IsAudio:     strings.HasSuffix(lowerF, ".mp3") || strings.HasSuffix(lowerF, ".m4a") || strings.HasSuffix(lowerF, ".wav") || strings.HasSuffix(lowerF, ".flac"),
 			}
 			medias = append(medias, media)
 		}
