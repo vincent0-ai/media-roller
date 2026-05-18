@@ -1,64 +1,81 @@
 <!doctype html>
 <html lang="en">
+
 <head>
     <title>media-roller</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <link rel="stylesheet" type="text/css" href="/static/css//bootstrap.min.css">
     <link rel="stylesheet" type="text/css" href="/static/css/style.css">
 </head>
+
 <body>
-<div class="container d-flex flex-column text-light text-center">
-    <div class="flex-grow-1"></div>
-    <div class="jumbotron bg-transparent flex-grow-1">
-        <h1 class="display-4"><a class="text-light" href="/">media roller</a></h1>
-        <p>
-            Mobile friendly tool for downloading videos from social media
-        </p>
-        <div>
-            <form action="/fetch" method="GET">
-                <div class="input-group mb-2">
-                    <input name="url" type="url" class="form-control" placeholder="URL" aria-label="URL"
-                           aria-describedby="button-submit" value="{{.url}}" autofocus>
-                    <div class="input-group-append">
-                        <button class="btn btn-primary" type="submit" id="button-submit">Submit</button>
+    <div class="container d-flex flex-column text-light text-center">
+        <div class="flex-grow-1"></div>
+        <div class="jumbotron bg-transparent flex-grow-1">
+            <h1 class="display-4"><a class="text-light" href="/">media roller</a></h1>
+            <p>
+                Mobile friendly tool for downloading videos from social media
+            </p>
+            <div>
+                <form action="/fetch" method="GET"
+                    onsubmit="document.getElementById('button-submit').disabled=true; document.getElementById('button-submit').innerHTML='Processing...';">
+                    <div class="input-group mb-2">
+                        <input name="url" type="url" class="form-control" placeholder="URL" aria-label="URL"
+                            aria-describedby="button-submit" value="{{.url}}" autofocus required>
+                        <div class="input-group-append">
+                            <button class="btn btn-primary" type="submit" id="button-submit">Submit</button>
+                        </div>
                     </div>
-                </div>
-                <div class="form-check text-left" style="margin-bottom: 20px;">
-                    <input type="checkbox" class="form-check-input" id="audioOnly" name="audio" value="true" {{ if .isAudio }}checked{{ end }}>
-                    <label class="form-check-label" for="audioOnly">Audio Only</label>
-                </div>
-            </form>
-            {{ if .media }}
-            <div style="margin-top:20px;">
-                <h2>Done!</h2>
-                {{range .media}}
-                <div class="mb-4">
-                    <a style="color: dodgerblue" href="/download?id={{.Id}}">{{.Name}}</a> <small>{{.HumanSize}}</small><br>
-                    {{ if .IsAudio }}
-                    <audio controls class="mt-2" style="width: 250px;">
-                        <source src="/download?id={{.Id}}" />
-                    </audio>
-                    {{ else }}
-                    <video controls loop width="250" class="mt-2">
-                        <source src="/download?id={{.Id}}" type="video/mp4"/>
-                    </video>
+                    <div class="form-check text-left" style="margin-bottom: 20px;">
+                        <input type="checkbox" class="form-check-input" id="audioOnly" name="audio" value="true" {{ if
+                            .isAudio }}checked{{ end }}>
+                        <label class="form-check-label" for="audioOnly">Audio Only</label>
+                    </div>
+                </form>
+                {{ if .media }}
+                <div style="margin-top:20px;">
+                    <h2>Done!</h2>
+                    {{range .media}}
+                    <div class="mb-4">
+                        <a style="color: dodgerblue" href="/download?id={{.Id}}">{{.Name}}</a>
+                        <small>{{.HumanSize}}</small><br>
+                        {{ if .IsAudio }}
+                        <audio controls class="mt-2" style="width: 250px;">
+                            <source src="/download?id={{.Id}}" />
+                        </audio>
+                        {{ else }}
+                        <video controls loop width="250" class="mt-2">
+                            <source src="/download?id={{.Id}}" type="video/mp4" />
+                        </video>
+                        {{ end }}
+                    </div>
                     {{ end }}
                 </div>
                 {{ end }}
+                {{ if .error }}
+                <h4 style="margin-top:20px;">Error</h4>
+                <pre style="background-color:white;text-align:left;white-space: pre-wrap;">{{ .error }}</pre>
+                {{ end }}
+
+                <div class="mt-5 text-left" style="background: rgba(0,0,0,0.1); padding: 15px; border-radius: 8px;">
+                    <h5>iOS Integration</h5>
+                    <p class="mb-2"><small>Install the iOS Shortcut for one-click downloads directly from your share
+                            sheet:</small></p>
+                    <a href="https://www.icloud.com/shortcuts/d3b05b78eb434496ab28dd91e1c79615" target="_blank"
+                        class="btn btn-sm btn-outline-light">Download iCloud Shortcut</a>
+                    <p class="mt-2 mb-0" style="color: #ccc;"><small><em>Note: Edit the shortcut after installing to
+                                point to this server's address. Append <code>&audio=true</code> to the endpoint for an
+                                audio-only shortcut.</em></small></p>
+                </div>
             </div>
-            {{ end }}
-            {{ if .error }}
-            <h4 style="margin-top:20px;">Error</h4>
-            <pre style="background-color:white;text-align:left;white-space: pre-wrap;">{{ .error }}</pre>
-            {{ end }}
         </div>
+        <footer>
+            <div>
+                <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> version {{ $.ytDlpVersion }}<br>
+                <p><a href="/about">about media-roller</a></p>
+            </div>
+        </footer>
     </div>
-    <footer>
-        <div>
-            <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> version {{ $.ytDlpVersion }}<br>
-            <p><a href="/about">about media-roller</a></p>
-        </div>
-    </footer>
-</div>
 </body>
+
 </html>
