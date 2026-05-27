@@ -289,13 +289,15 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		errStdout = scanCommandOutput(stdoutIn, &stdoutBuf, os.Stdout, nil)
+		errStdout = scanCommandOutput(stdoutIn, &stdoutBuf, os.Stdout, updateProgress)
 	}()
-
-	errStderr = scanCommandOutput(stderrIn, &stderrBuf, os.Stderr, updateProgress)
+	go func() {
+		defer wg.Done()
+		errStderr = scanCommandOutput(stderrIn, &stderrBuf, os.Stderr, updateProgress)
+	}()
 	wg.Wait()
 	log.Info().Msgf("Done with %s", id)
 

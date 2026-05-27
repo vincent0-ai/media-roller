@@ -46,7 +46,7 @@ func StartDownloadJob(url string, args map[string]string) *DownloadJob {
 		job.mu.RLock()
 		status := job.Status
 		job.mu.RUnlock()
-		if status == "running" || status == "completed" {
+		if status == "queued" || status == "running" || status == "completed" {
 			downloadJobRegistry.mu.Unlock()
 			return job
 		}
