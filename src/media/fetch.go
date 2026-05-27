@@ -1,18 +1,20 @@
 package media
 
 import (
+	"bufio"
 	"crypto/md5"
 	"errors"
 	"fmt"
 	"github.com/dustin/go-humanize"
-	"golang.org/x/sync/errgroup"
 	"html/template"
 	"media-roller/src/utils"
 	"net/http"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,8 @@ import (
 	"os/exec"
 )
 
+var ErrMissingURL = errors.New("missing URL")
+
 type Media struct {
 	Id          string
 	Name        string
@@ -41,6 +45,8 @@ var fetchIndexTmpl = template.Must(template.ParseFiles("templates/media/index.ht
 // Where the media files are saved. Always has a trailing slash
 var downloadDir = getDownloadDir()
 var idCharSet = regexp.MustCompile(`^[a-zA-Z0-9]+$`).MatchString
+var ytDlpProgressRegexp = regexp.MustCompile(`^\[download\]\s+(\d+(?:\.\d+)?)%`)
+var ytDlpStageRegexp = regexp.MustCompile(`^\[(ExtractAudio|Merger|FixupM4a|VideoConvertor)\]`)
 
 func Index(w http.ResponseWriter, _ *http.Request) {
 	data := map[string]string{
@@ -54,6 +60,17 @@ func Index(w http.ResponseWriter, _ *http.Request) {
 
 func FetchMedia(w http.ResponseWriter, r *http.Request) {
 	url, args := getUrl(r)
+	if url == "" {
+		data := map[string]any{
+			"url":          url,
+			"ytDlpVersion": CachedYtDlpVersion,
+		}
+		if err := fetchIndexTmpl.Execute(w, data); err != nil {
+			log.Error().Msgf("Error rendering template: %v", err)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+		}
+		return
+	}
 
 	isAudio := false
 	if _, has := args["-x"]; has {
@@ -62,20 +79,15 @@ func FetchMedia(w http.ResponseWriter, r *http.Request) {
 		isAudio = true
 	}
 
-	media, ytdlpErrorMessage, err := getMediaResults(url, args)
+	job := StartDownloadJob(url, args)
 	data := map[string]any{
 		"url":          url,
-		"media":        media,
-		"error":        ytdlpErrorMessage,
 		"ytDlpVersion": CachedYtDlpVersion,
 		"isAudio":      isAudio,
-	}
-	if err != nil {
-		_ = fetchIndexTmpl.Execute(w, data)
-		return
+		"job":          job.Snapshot(),
 	}
 
-	if err = fetchIndexTmpl.Execute(w, data); err != nil {
+	if err := fetchIndexTmpl.Execute(w, data); err != nil {
 		log.Error().Msgf("Error rendering template: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
@@ -85,7 +97,9 @@ func FetchMediaApi(w http.ResponseWriter, r *http.Request) {
 	url, args := getUrl(r)
 	medias, _, err := getMediaResults(url, args)
 	if err != nil {
-		log.Error().Msgf("error getting media results: %v", err)
+		if !errors.Is(err, ErrMissingURL) {
+			log.Error().Msgf("error getting media results: %v", err)
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -97,6 +111,26 @@ func FetchMediaApi(w http.ResponseWriter, r *http.Request) {
 
 	// just take the first one
 	streamFileToClientById(w, r, medias[0].Id)
+}
+
+func DownloadProgressApi(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "Missing job ID", http.StatusBadRequest)
+		return
+	}
+
+	job, ok := getDownloadJob(id)
+	if !ok {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := job.writeSnapshot(w); err != nil {
+		log.Error().Msgf("Error writing job snapshot: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+	}
 }
 
 func getUrl(r *http.Request) (string, map[string]string) {
@@ -122,8 +156,12 @@ func getUrl(r *http.Request) (string, map[string]string) {
 }
 
 func getMediaResults(inputUrl string, args map[string]string) ([]Media, string, error) {
+	return getMediaResultsWithProgress(inputUrl, args, nil)
+}
+
+func getMediaResultsWithProgress(inputUrl string, args map[string]string, updateProgress func(int, string)) ([]Media, string, error) {
 	if inputUrl == "" {
-		return nil, "", errors.New("missing URL")
+		return nil, "", ErrMissingURL
 	}
 
 	url := utils.NormalizeUrl(inputUrl)
@@ -139,10 +177,16 @@ func getMediaResults(inputUrl string, args map[string]string) ([]Media, string, 
 	if err != nil {
 		return nil, "", err
 	}
+	if len(medias) > 0 {
+		if updateProgress != nil {
+			updateProgress(100, "Using cached files")
+		}
+		return medias, "", nil
+	}
 	if len(medias) == 0 {
 		// We don't, so go fetch it
 		errMessage := ""
-		id, errMessage, err = downloadMedia(url, args)
+		id, errMessage, err = downloadMediaWithProgress(url, args, updateProgress)
 		if err != nil {
 			return nil, errMessage, err
 		}
@@ -157,11 +201,18 @@ func getMediaResults(inputUrl string, args map[string]string) ([]Media, string, 
 
 // returns the ID of the file, and error message, and an error
 func downloadMedia(url string, requestArgs map[string]string) (string, string, error) {
+	return downloadMediaWithProgress(url, requestArgs, nil)
+}
+
+func downloadMediaWithProgress(url string, requestArgs map[string]string, updateProgress func(int, string)) (string, string, error) {
 	// The id will be used as the name of the parent directory of the output files
 	id := GetMD5Hash(url, requestArgs)
 	name := getMediaDirectory(id) + "%(id)s.%(ext)s"
 
 	log.Info().Msgf("Downloading %s to %s", url, name)
+	if updateProgress != nil {
+		updateProgress(0, "Starting yt-dlp")
+	}
 
 	isAudioOnly := false
 	if _, has := requestArgs["-x"]; has {
@@ -175,6 +226,7 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 		"--restrict-filenames": "",
 		"--write-info-json":    "",
 		"--verbose":            "",
+		"--newline":            "",
 		"--output":             name,
 	}
 
@@ -228,8 +280,6 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 	stderrIn, _ := cmd.StderrPipe()
 
 	var errStdout, errStderr error
-	stdout := io.MultiWriter(os.Stdout, &stdoutBuf)
-	stderr := io.MultiWriter(os.Stderr, &stderrBuf)
 
 	err := cmd.Start()
 	if err != nil {
@@ -237,15 +287,16 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 		return "", err.Error(), err
 	}
 
-	eg := errgroup.Group{}
+	var wg sync.WaitGroup
 
-	eg.Go(func() error {
-		_, errStdout = io.Copy(stdout, stdoutIn)
-		return nil
-	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		errStdout = scanCommandOutput(stdoutIn, &stdoutBuf, os.Stdout, nil)
+	}()
 
-	_, errStderr = io.Copy(stderr, stderrIn)
-	_ = eg.Wait()
+	errStderr = scanCommandOutput(stderrIn, &stderrBuf, os.Stderr, updateProgress)
+	wg.Wait()
 	log.Info().Msgf("Done with %s", id)
 
 	err = cmd.Wait()
@@ -259,6 +310,63 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 	}
 
 	return id, "", nil
+}
+
+func scanCommandOutput(reader io.Reader, buffer *bytes.Buffer, writer io.Writer, updateProgress func(int, string)) error {
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if buffer != nil {
+			buffer.WriteString(line)
+			buffer.WriteByte('\n')
+		}
+		if writer != nil {
+			_, _ = fmt.Fprintln(writer, line)
+		}
+		if updateProgress != nil {
+			if percent, message, ok := parseYtDlpProgressLine(line); ok {
+				updateProgress(percent, message)
+			} else if message, ok := parseYtDlpStageLine(line); ok {
+				updateProgress(100, message)
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+func parseYtDlpProgressLine(line string) (int, string, bool) {
+	matches := ytDlpProgressRegexp.FindStringSubmatch(line)
+	if len(matches) != 2 {
+		return 0, "", false
+	}
+
+	percentValue, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, "", false
+	}
+
+	return int(percentValue + 0.5), "Downloading media", true
+}
+
+func parseYtDlpStageLine(line string) (string, bool) {
+	if !ytDlpStageRegexp.MatchString(line) {
+		return "", false
+	}
+
+	if strings.Contains(line, "ExtractAudio") {
+		return "Converting audio", true
+	}
+	if strings.Contains(line, "Merger") {
+		return "Merging formats", true
+	}
+	if strings.Contains(line, "FixupM4a") {
+		return "Finalizing audio", true
+	}
+	if strings.Contains(line, "VideoConvertor") {
+		return "Converting video", true
+	}
+
+	return "Processing media", true
 }
 
 // Returns the relative directory containing the media file, with a trailing slash.

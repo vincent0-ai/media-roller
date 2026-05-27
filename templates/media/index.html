@@ -32,6 +32,132 @@
                         <label class="form-check-label" for="audioOnly">Audio Only</label>
                     </div>
                 </form>
+                {{ if .job }}
+                <div id="download-progress" class="download-progress-shell mt-4" data-job-id="{{ .job.ID }}">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <h4 class="mb-0" id="progress-title">Preparing download</h4>
+                        <small class="text-muted" id="progress-percent">0%</small>
+                    </div>
+                    <div class="progress download-progress-track">
+                        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                            role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                            0%
+                        </div>
+                    </div>
+                    <p id="progress-message" class="mt-2 mb-0 text-left text-muted">Queued</p>
+                </div>
+                <div id="download-results" style="margin-top:20px;"></div>
+                <script>
+                    (function () {
+                        const progressShell = document.getElementById('download-progress');
+                        if (!progressShell) {
+                            return;
+                        }
+
+                        const jobId = progressShell.dataset.jobId;
+                        const progressBar = document.getElementById('progress-bar');
+                        const progressTitle = document.getElementById('progress-title');
+                        const progressPercent = document.getElementById('progress-percent');
+                        const progressMessage = document.getElementById('progress-message');
+                        const results = document.getElementById('download-results');
+
+                        function escapeHtml(value) {
+                            return String(value)
+                                .replaceAll('&', '&amp;')
+                                .replaceAll('<', '&lt;')
+                                .replaceAll('>', '&gt;')
+                                .replaceAll('"', '&quot;')
+                                .replaceAll("'", '&#39;');
+                        }
+
+                        function renderResults(media) {
+                            if (!results) {
+                                return;
+                            }
+                            if (!media || media.length === 0) {
+                                results.innerHTML = '<div class="alert alert-warning text-left">No media files were produced.</div>';
+                                return;
+                            }
+
+                            let html = '<div style="margin-top:20px;"><h2>Done!</h2>';
+                            for (const item of media) {
+                                html += '<div class="mb-4 text-left">';
+                                html += '<a style="color: dodgerblue" href="/download?id=' + escapeHtml(item.Id) + '">' + escapeHtml(item.Name) + '</a>';
+                                html += '<small class="d-block">' + escapeHtml(item.HumanSize) + '</small>';
+                                if (item.IsAudio) {
+                                    html += '<audio controls class="mt-2" style="width: 250px;"><source src="/download?id=' + escapeHtml(item.Id) + '" /></audio>';
+                                } else {
+                                    html += '<video controls loop width="250" class="mt-2"><source src="/download?id=' + escapeHtml(item.Id) + '" type="video/mp4" /></video>';
+                                }
+                                html += '</div>';
+                            }
+                            html += '</div>';
+                            results.innerHTML = html;
+                        }
+
+                        function updateProgress(data) {
+                            const progress = Math.max(0, Math.min(100, Number(data.progress || 0)));
+                            const message = data.message || 'Working';
+
+                            progressShell.hidden = false;
+                            progressBar.style.width = progress + '%';
+                            progressBar.setAttribute('aria-valuenow', String(progress));
+                            progressBar.textContent = progress + '%';
+                            progressPercent.textContent = progress + '%';
+                            progressMessage.textContent = message;
+
+                            if (data.status === 'error') {
+                                progressTitle.textContent = 'Download failed';
+                                progressBar.classList.remove('progress-bar-animated');
+                                progressBar.classList.add('bg-danger');
+                                progressMessage.textContent = data.error || message || 'Download failed';
+                                return false;
+                            }
+
+                            if (data.status === 'completed') {
+                                progressTitle.textContent = 'Done!';
+                                progressBar.classList.remove('progress-bar-animated');
+                                progressBar.style.width = '100%';
+                                progressBar.setAttribute('aria-valuenow', '100');
+                                progressBar.textContent = '100%';
+                                progressPercent.textContent = '100%';
+                                progressMessage.textContent = 'Media is ready';
+                                renderResults(data.media || []);
+                                return false;
+                            }
+
+                            if (progress >= 100) {
+                                progressTitle.textContent = 'Finalizing';
+                            } else {
+                                progressTitle.textContent = 'Downloading';
+                            }
+
+                            return true;
+                        }
+
+                        async function pollJob() {
+                            try {
+                                const response = await fetch('/api/progress?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
+                                if (!response.ok) {
+                                    throw new Error(await response.text());
+                                }
+
+                                const data = await response.json();
+                                if (updateProgress(data)) {
+                                    window.setTimeout(pollJob, 1000);
+                                }
+                            } catch (error) {
+                                progressTitle.textContent = 'Waiting for status';
+                                progressMessage.textContent = error.message || 'Unable to read progress';
+                                window.setTimeout(pollJob, 2000);
+                            }
+                        }
+
+                        pollJob();
+                    })();
+                </script>
+                {{ end }}
+
                 {{ if .media }}
                 <div style="margin-top:20px;">
                     <h2>Done!</h2>

@@ -24,6 +24,7 @@ func main() {
 		router.Get("/", media.Index)
 		router.Get("/fetch", media.FetchMedia)
 		router.Get("/api/download", media.FetchMediaApi)
+		router.Get("/api/progress", media.DownloadProgressApi)
 		router.Get("/download", media.ServeMedia)
 		router.Get("/about", media.AboutIndex)
 	})
