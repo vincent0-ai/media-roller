@@ -18,7 +18,7 @@
             </p>
             <div>
                 <form action="/fetch" method="GET"
-                    onsubmit="document.getElementById('button-submit').disabled=true; document.getElementById('button-submit').innerHTML='Processing...';">
+                    onsubmit="const submitButton=document.getElementById('button-submit'); submitButton.disabled=true; submitButton.innerHTML='Processing...';">
                     <div class="input-group mb-2">
                         <input name="url" type="url" class="form-control" placeholder="URL" aria-label="URL"
                             aria-describedby="button-submit" value="{{.url}}" autofocus required>
@@ -60,6 +60,15 @@
                         const progressPercent = document.getElementById('progress-percent');
                         const progressMessage = document.getElementById('progress-message');
                         const results = document.getElementById('download-results');
+                        const submitButton = document.getElementById('button-submit');
+
+                        function setSubmitButtonState(label, disabled) {
+                            if (!submitButton) {
+                                return;
+                            }
+                            submitButton.textContent = label;
+                            submitButton.disabled = disabled;
+                        }
 
                         function escapeHtml(value) {
                             return String(value)
@@ -111,6 +120,7 @@
                                 progressBar.classList.remove('progress-bar-animated');
                                 progressBar.classList.add('bg-danger');
                                 progressMessage.textContent = data.error || message || 'Download failed';
+                                setSubmitButtonState('Retry', false);
                                 return false;
                             }
 
@@ -122,14 +132,17 @@
                                 progressBar.textContent = '100%';
                                 progressPercent.textContent = '100%';
                                 progressMessage.textContent = 'Media is ready';
+                                setSubmitButtonState('Done', false);
                                 renderResults(data.media || []);
                                 return false;
                             }
 
                             if (progress >= 100) {
                                 progressTitle.textContent = 'Finalizing';
+                                setSubmitButtonState('Finalizing', true);
                             } else {
                                 progressTitle.textContent = 'Downloading';
+                                setSubmitButtonState('Processing ' + progress + '%', true);
                             }
 
                             return true;
@@ -149,6 +162,7 @@
                             } catch (error) {
                                 progressTitle.textContent = 'Waiting for status';
                                 progressMessage.textContent = error.message || 'Unable to read progress';
+                                setSubmitButtonState('Processing...', true);
                                 window.setTimeout(pollJob, 2000);
                             }
                         }
