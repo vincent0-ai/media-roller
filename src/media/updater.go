@@ -36,9 +36,11 @@ func UpdateYtDlp() error {
 
 	var wg sync.WaitGroup
 
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		_, errStdout = io.Copy(stdout, stdoutIn)
-	})
+	}()
 
 	_, errStderr = io.Copy(stderr, stderrIn)
 	wg.Wait()
