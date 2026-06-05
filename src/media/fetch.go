@@ -245,6 +245,18 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 }
 
 func downloadMediaWithProgress(url string, requestArgs map[string]string, updateProgress func(int, string)) (string, string, error) {
+	// 1. Try downloading without cookies first
+	id, errMsg, err := downloadMediaWithBrowser(url, requestArgs, "", updateProgress)
+	if err == nil {
+		return id, "", nil
+	}
+
+	// If the failure is not related to cookies/auth, return the error immediately
+	if !isCookiesOrAuthError(errMsg) {
+		return "", errMsg, err
+	}
+
+	// 2. Try with browsers to retrieve cookies
 	browsers := []string{"chrome", "brave", "safari"}
 
 	if customBrowser := strings.TrimSpace(os.Getenv("MR_COOKIES_FROM_BROWSER")); customBrowser != "" {
@@ -255,7 +267,7 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 	var lastErrMsg string
 
 	for _, browser := range browsers {
-		id, errMsg, err := downloadMediaWithBrowser(url, requestArgs, browser, updateProgress)
+		id, errMsg, err = downloadMediaWithBrowser(url, requestArgs, browser, updateProgress)
 		if err == nil {
 			return id, "", nil
 		}
@@ -263,21 +275,23 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 		lastErr = err
 		lastErrMsg = errMsg
 
-		if !isCookiesError(errMsg) {
-			return "", errMsg, err
-		}
-
 		if len(browsers) > 1 && updateProgress != nil {
 			updateProgress(0, fmt.Sprintf("Retrying with %s", browser))
 		}
-		log.Info().Msgf("Cookies failed, trying next browser")
+		log.Info().Msgf("Cookies failed for browser %s, trying next: %v", browser, err)
 	}
 
 	return "", lastErrMsg, lastErr
 }
 
-func isCookiesError(errMsg string) bool {
-	return strings.Contains(errMsg, "cookies") || strings.Contains(errMsg, "authentication")
+func isCookiesOrAuthError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "cookies") ||
+		strings.Contains(lower, "authentication") ||
+		strings.Contains(lower, "sign in") ||
+		strings.Contains(lower, "logged in") ||
+		strings.Contains(lower, "private video") ||
+		strings.Contains(lower, "age-restricted")
 }
 
 func findBrowserIndex(browser string, browsers []string) int {
@@ -293,9 +307,16 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	id := GetMD5Hash(url, requestArgs)
 	name := getMediaDirectory(id) + "%(id)s.%(ext)s"
 
-	log.Info().Msgf("Downloading %s to %s with browser=%s", url, name, browser)
-	if updateProgress != nil {
-		updateProgress(0, fmt.Sprintf("Starting download with %s", browser))
+	if browser != "" {
+		log.Info().Msgf("Downloading %s to %s with browser=%s", url, name, browser)
+		if updateProgress != nil {
+			updateProgress(0, fmt.Sprintf("Starting download with %s", browser))
+		}
+	} else {
+		log.Info().Msgf("Downloading %s to %s", url, name)
+		if updateProgress != nil {
+			updateProgress(0, "Starting download")
+		}
 	}
 
 	isAudioOnly := false
@@ -344,7 +365,9 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	}
 
 	envVars := getEnvVars()
-	envVars["--cookies-from-browser"] = browser
+	if browser != "" {
+		envVars["--cookies-from-browser"] = browser
+	}
 	for arg, value := range envVars {
 		if _, has := requestArgs[arg]; !has {
 			args = append(args, arg)
