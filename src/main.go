@@ -30,14 +30,12 @@ func main() {
 	})
 	fileServer(router, "/static", "static/")
 
-	// Print out all routes
+	// Validate routes
 	walkFunc := func(method string, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
-		log.Info().Msgf("%s %s", method, route)
 		return nil
 	}
-	// Panic if there is an error
 	if err := chi.Walk(router, walkFunc); err != nil {
-		log.Panic().Msgf("%s\n", err.Error())
+		log.Panic().Msgf("Route setup error: %s", err.Error())
 	}
 
 	media.GetInstalledVersion()

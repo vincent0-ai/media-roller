@@ -203,6 +203,11 @@ func extractUserFriendlyError(fullError string) string {
 	lines := strings.Split(fullError, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+
+		if strings.Contains(line, "could not find") && strings.Contains(line, "cookies database") {
+			return "Browser cookies not found. Make sure you're logged into your browser (Brave, Chrome, Firefox, or Edge) and try again."
+		}
+
 		if strings.Contains(line, "ERROR:") {
 			if strings.Contains(line, "Sign in to confirm you're not a bot") {
 				return "YouTube requires authentication. Please ensure you're logged into your browser and try again."
@@ -240,13 +245,59 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 }
 
 func downloadMediaWithProgress(url string, requestArgs map[string]string, updateProgress func(int, string)) (string, string, error) {
-	// The id will be used as the name of the parent directory of the output files
+	id := GetMD5Hash(url, requestArgs)
+
+	browsers := []string{"chrome", "brave", "safari"}
+
+	if customBrowser := strings.TrimSpace(os.Getenv("MR_COOKIES_FROM_BROWSER")); customBrowser != "" {
+		browsers = []string{customBrowser}
+	}
+
+	var lastErr error
+	var lastErrMsg string
+
+	for _, browser := range browsers {
+		id, errMsg, err := downloadMediaWithBrowser(url, requestArgs, browser, updateProgress)
+		if err == nil {
+			return id, "", nil
+		}
+
+		lastErr = err
+		lastErrMsg = errMsg
+
+		if !isCookiesError(errMsg) {
+			return "", errMsg, err
+		}
+
+		if len(browsers) > 1 && updateProgress != nil {
+			updateProgress(0, fmt.Sprintf("Retrying with %s", browser))
+		}
+		log.Info().Msgf("Cookies failed, trying next browser")
+	}
+
+	return "", lastErrMsg, lastErr
+}
+
+func isCookiesError(errMsg string) bool {
+	return strings.Contains(errMsg, "cookies") || strings.Contains(errMsg, "authentication")
+}
+
+func findBrowserIndex(browser string, browsers []string) int {
+	for i, b := range browsers {
+		if b == browser {
+			return i
+		}
+	}
+	return -1
+}
+
+func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser string, updateProgress func(int, string)) (string, string, error) {
 	id := GetMD5Hash(url, requestArgs)
 	name := getMediaDirectory(id) + "%(id)s.%(ext)s"
 
-	log.Info().Msgf("Downloading %s to %s", url, name)
+	log.Info().Msgf("Downloading %s to %s with browser=%s", url, name, browser)
 	if updateProgress != nil {
-		updateProgress(0, "Starting yt-dlp")
+		updateProgress(0, fmt.Sprintf("Starting download with %s", browser))
 	}
 
 	isAudioOnly := false
@@ -278,7 +329,6 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 
 	args := make([]string, 0)
 
-	// First add all default arguments that were not supplied as request level arguments
 	for arg, value := range defaultArgs {
 		if _, has := requestArgs[arg]; !has {
 			args = append(args, arg)
@@ -288,7 +338,6 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 		}
 	}
 
-	// Now add all request level arguments
 	for arg, value := range requestArgs {
 		args = append(args, arg)
 		if value != "" {
@@ -296,8 +345,9 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 		}
 	}
 
-	// And finally add any environment level arguments not supplied as request level args
-	for arg, value := range getEnvVars() {
+	envVars := getEnvVars()
+	envVars["--cookies-from-browser"] = browser
+	for arg, value := range envVars {
 		if _, has := requestArgs[arg]; !has {
 			args = append(args, arg)
 			if value != "" {
@@ -341,7 +391,7 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 		log.Error().Err(err).Msgf("cmd.Run() failed with %s", err)
 		fullError := strings.TrimSpace(stderrBuf.String())
 		userMessage := extractUserFriendlyError(fullError)
-		log.Error().Msgf("Full error output: %s", fullError)
+		log.Error().Msgf("Full error output for browser=%s: %s", browser, fullError)
 		return "", userMessage, err
 	} else if errStdout != nil {
 		log.Error().Msgf("failed to capture stdout: %v", errStdout)
@@ -513,11 +563,6 @@ func getEnvVars() map[string]string {
 	vars := make(map[string]string)
 	if ev := strings.TrimSpace(os.Getenv("MR_PROXY")); ev != "" {
 		vars["--proxy"] = ev
-	}
-	if ev := strings.TrimSpace(os.Getenv("MR_COOKIES_FROM_BROWSER")); ev != "" {
-		vars["--cookies-from-browser"] = ev
-	} else {
-		vars["--cookies-from-browser"] = "chromium"
 	}
 	return vars
 }
