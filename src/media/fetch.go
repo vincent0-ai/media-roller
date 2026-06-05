@@ -199,6 +199,41 @@ func getMediaResultsWithProgress(inputUrl string, args map[string]string, update
 	return medias, "", nil
 }
 
+func extractUserFriendlyError(fullError string) string {
+	lines := strings.Split(fullError, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "ERROR:") {
+			if strings.Contains(line, "Sign in to confirm you're not a bot") {
+				return "YouTube requires authentication. Please ensure you're logged into your browser and try again."
+			}
+			if strings.Contains(line, "Video unavailable") {
+				return "This video is unavailable or has been removed."
+			}
+			if strings.Contains(line, "Private video") {
+				return "This is a private video and cannot be downloaded."
+			}
+			if strings.Contains(line, "age-restricted") {
+				return "This video is age-restricted. Please ensure you're logged in with an account that has access."
+			}
+			if strings.Contains(line, "403") || strings.Contains(line, "Forbidden") {
+				return "Access denied. The content owner has restricted downloading."
+			}
+			if strings.Contains(line, "404") || strings.Contains(line, "Not Found") {
+				return "Video not found. Please check the URL."
+			}
+			if idx := strings.Index(line, "ERROR:"); idx != -1 {
+				msg := strings.TrimSpace(line[idx+6:])
+				if len(msg) > 200 {
+					msg = msg[:200] + "..."
+				}
+				return msg
+			}
+		}
+	}
+	return "Download failed. Please check the URL and try again."
+}
+
 // returns the ID of the file, and error message, and an error
 func downloadMedia(url string, requestArgs map[string]string) (string, string, error) {
 	return downloadMediaWithProgress(url, requestArgs, nil)
@@ -304,7 +339,10 @@ func downloadMediaWithProgress(url string, requestArgs map[string]string, update
 	err = cmd.Wait()
 	if err != nil {
 		log.Error().Err(err).Msgf("cmd.Run() failed with %s", err)
-		return "", strings.TrimSpace(stderrBuf.String()), err
+		fullError := strings.TrimSpace(stderrBuf.String())
+		userMessage := extractUserFriendlyError(fullError)
+		log.Error().Msgf("Full error output: %s", fullError)
+		return "", userMessage, err
 	} else if errStdout != nil {
 		log.Error().Msgf("failed to capture stdout: %v", errStdout)
 	} else if errStderr != nil {
@@ -475,6 +513,11 @@ func getEnvVars() map[string]string {
 	vars := make(map[string]string)
 	if ev := strings.TrimSpace(os.Getenv("MR_PROXY")); ev != "" {
 		vars["--proxy"] = ev
+	}
+	if ev := strings.TrimSpace(os.Getenv("MR_COOKIES_FROM_BROWSER")); ev != "" {
+		vars["--cookies-from-browser"] = ev
+	} else {
+		vars["--cookies-from-browser"] = "chromium"
 	}
 	return vars
 }
