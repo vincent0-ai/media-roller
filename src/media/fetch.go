@@ -245,8 +245,6 @@ func downloadMedia(url string, requestArgs map[string]string) (string, string, e
 }
 
 func downloadMediaWithProgress(url string, requestArgs map[string]string, updateProgress func(int, string)) (string, string, error) {
-	id := GetMD5Hash(url, requestArgs)
-
 	browsers := []string{"chrome", "brave", "safari"}
 
 	if customBrowser := strings.TrimSpace(os.Getenv("MR_COOKIES_FROM_BROWSER")); customBrowser != "" {
