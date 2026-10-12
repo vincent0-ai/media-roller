@@ -3,6 +3,7 @@ package media
 import (
 	"bufio"
 	"crypto/md5"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/dustin/go-humanize"
@@ -37,11 +38,65 @@ var ErrMissingURL = errors.New("missing URL")
 var ErrURLNotAllowed = errors.New("URL not allowed")
 
 type Media struct {
-	Id          string
-	Name        string
-	SizeInBytes int64
-	HumanSize   string
-	IsAudio     bool
+	Id           string
+	Name         string
+	Title        string
+	DownloadName string
+	SizeInBytes  int64
+	HumanSize    string
+	IsAudio      bool
+}
+
+type mediaInfoJSON struct {
+	Title string `json:"title"`
+}
+
+// titleFromInfoJSON reads the video title yt-dlp saved alongside the media.
+func titleFromInfoJSON(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var info mediaInfoJSON
+	if err := json.Unmarshal(data, &info); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(info.Title)
+}
+
+// downloadDisplayName returns a human-friendly filename (original video
+// title + real extension) so files saved to the device are recognizable.
+func downloadDisplayName(id, base string) string {
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	infoPath := getMediaDirectory(id) + stem + ".info.json"
+	return safeFileName(titleFromInfoJSON(infoPath), base)
+}
+
+// safeFileName keeps the title but strips characters illegal on
+// Windows/macOS/Android, trims runaway length, and keeps the extension.
+func safeFileName(title, fallback string) string {
+	ext := filepath.Ext(fallback)
+	t := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(title), ext))
+	if t == "" {
+		return fallback
+	}
+	var b strings.Builder
+	for _, r := range t {
+		if r < 32 || strings.ContainsRune(`\/:*?"<>|`, r) {
+			b.WriteByte('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	s := strings.Trim(strings.TrimSpace(b.String()), ".")
+	if s == "" {
+		return fallback
+	}
+	if r := []rune(s); len(r) > 100 {
+		s = string(r[:100])
+	}
+	return s + ext
 }
 
 var fetchIndexTmpl *template.Template
@@ -638,6 +693,14 @@ func getAllFilesForId(id string) ([]Media, error) {
 				HumanSize:   humanize.Bytes(uint64(size)),
 				IsAudio:     strings.HasSuffix(lowerF, ".mp3") || strings.HasSuffix(lowerF, ".m4a") || strings.HasSuffix(lowerF, ".wav") || strings.HasSuffix(lowerF, ".flac"),
 			}
+			// Prefer the original video title from the info manifest.
+			infoPath := root + strings.TrimSuffix(f, filepath.Ext(f)) + ".info.json"
+			if title := titleFromInfoJSON(infoPath); title != "" {
+				media.Title = title
+			} else {
+				media.Title = media.Name
+			}
+			media.DownloadName = downloadDisplayName(id, media.Name)
 			medias = append(medias, media)
 		}
 	}

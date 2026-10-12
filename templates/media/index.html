@@ -2,7 +2,8 @@
 <html lang="en">
 
 <head>
-    <title>media-roller</title>
+    <title>Ydown — video &amp; audio downloader</title>
+    <meta name="description" content="Ydown downloads video and MP3 audio from YouTube, TikTok, Instagram, Facebook, X, Reddit, Vimeo and 1000+ sites. Free, no signup.">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <link rel="stylesheet" type="text/css" href="/static/css//bootstrap.min.css">
     <link rel="stylesheet" type="text/css" href="/static/css/style.css">
@@ -12,10 +13,27 @@
     <div class="container d-flex flex-column text-light text-center">
         <div class="flex-grow-1"></div>
         <div class="jumbotron bg-transparent flex-grow-1">
-            <h1 class="display-4"><a class="text-light" href="/">media roller</a></h1>
-            <p>
-                Mobile friendly tool for downloading videos from social media
+            <h1 class="display-4 brand"><a class="text-light" href="/">Ydown</a></h1>
+            <p class="tagline">
+                Download video and MP3 audio from your favourite sites. Free, no signup.
             </p>
+            <div class="site-chips">
+                <span class="site-chip">YouTube</span>
+                <span class="site-chip">TikTok</span>
+                <span class="site-chip">Instagram</span>
+                <span class="site-chip">Facebook</span>
+                <span class="site-chip">X</span>
+                <span class="site-chip">Reddit</span>
+                <span class="site-chip">Vimeo</span>
+                <span class="site-chip">SoundCloud</span>
+                <span class="site-chip">Twitch</span>
+                <span class="site-chip">1000+ more</span>
+            </div>
+            <ol class="steps text-left">
+                <li>Paste a video or audio link below.</li>
+                <li>Pick quality, audio-only, or iOS compatible.</li>
+                <li>Press Submit, preview, then Download.</li>
+            </ol>
             <div>
                 <form action="/fetch" method="GET"
                     onsubmit="const submitButton=document.getElementById('button-submit'); submitButton.disabled=true; submitButton.innerHTML='Processing...';">
@@ -114,7 +132,7 @@
                         function shareLink(id, name) {
                             const abs = new URL(mediaUrl(id), window.location.origin).href;
                             if (navigator.share) {
-                                navigator.share({ title: name || 'media-roller', url: abs });
+                                navigator.share({ title: name || 'Ydown', url: abs });
                             } else {
                                 copyLink(id);
                             }
@@ -127,7 +145,7 @@
                                 const seen = new Set(prev.map(function (e) { return e.Id; }));
                                 for (const item of (items || [])) {
                                     if (!seen.has(item.Id)) {
-                                        prev.unshift({ Id: item.Id, Name: item.Name, HumanSize: item.HumanSize || '', IsAudio: !!item.IsAudio, at: Date.now() });
+                                        prev.unshift({ Id: item.Id, Name: item.Name, Title: item.Title || item.Name, HumanSize: item.HumanSize || '', IsAudio: !!item.IsAudio, at: Date.now() });
                                         seen.add(item.Id);
                                     }
                                 }
@@ -145,8 +163,10 @@
                             if (!items.length) { shell.style.display = 'none'; return; }
                             shell.style.display = 'block';
                             list.innerHTML = items.map(function (item) {
-                                return '<div class="mb-2"><a style="color: dodgerblue" href="' + escapeHtml(mediaUrl(item.Id)) + '">' +
-                                    escapeHtml(item.Name || item.Id) + '</a>' +
+                                const kind = item.IsAudio ? 'AUDIO' : 'VIDEO';
+                                return '<div class="recent-item"><span class="media-pill ' + (item.IsAudio ? 'pill-audio' : 'pill-video') + '">' + kind + '</span> ' +
+                                    '<a style="color: dodgerblue" href="' + escapeHtml(mediaUrl(item.Id)) + '">' +
+                                    escapeHtml(item.Title || item.Name || item.Id) + '</a>' +
                                     (item.HumanSize ? ' <small class="text-muted">' + escapeHtml(item.HumanSize) + '</small>' : '') + '</div>';
                             }).join('');
                         }
@@ -163,7 +183,11 @@
                             let html = '<div style="margin-top:20px;"><h2>Done!</h2>';
                             for (const item of media) {
                                 const link = mediaUrl(item.Id);
-                                html += '<div class="mb-4 text-left">';
+                                const kind = item.IsAudio ? 'AUDIO' : 'VIDEO';
+                                const saveName = item.DownloadName || item.Name;
+                                html += '<div class="mb-4 text-left result-card">';
+                                html += '<span class="media-pill ' + (item.IsAudio ? 'pill-audio' : 'pill-video') + '">' + kind + '</span>';
+                                html += '<div class="media-title">' + escapeHtml(item.Title || item.Name) + '</div>';
                                 html += '<a style="color: dodgerblue" href="' + escapeHtml(link) + '">' + escapeHtml(item.Name) + '</a>';
                                 html += '<small class="d-block">' + escapeHtml(item.HumanSize) + '</small>';
                                 if (item.IsAudio) {
@@ -171,9 +195,9 @@
                                 } else {
                                     html += '<video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(link) + '" type="video/mp4" /></video>';
                                 }
-                                html += '<div class="mt-2"><a class="btn btn-sm btn-success mr-2" href="' + escapeHtml(link) + '" download="' + escapeHtml(item.Name) + '">Download</a> ' +
-                                    '<button class="btn btn-sm btn-outline-light mr-2" data-copy="' + escapeHtml(item.Id) + '">Copy link</button> ' +
-                                    '<button class="btn btn-sm btn-outline-light" data-share="' + escapeHtml(item.Id) + '" data-name="' + escapeHtml(item.Name) + '">Share</button></div>';
+                                html += '<div class="mt-2 result-actions"><a class="btn btn-sm btn-success" href="' + escapeHtml(link) + '" download="' + escapeHtml(saveName) + '">Download</a> ' +
+                                    '<button class="btn btn-sm btn-outline-light" data-copy="' + escapeHtml(item.Id) + '">Copy link</button> ' +
+                                    '<button class="btn btn-sm btn-outline-light" data-share="' + escapeHtml(item.Id) + '" data-name="' + escapeHtml(item.Title || item.Name) + '">Share</button></div>';
                                 html += '</div>';
                             }
                             html += '</div>';
@@ -267,9 +291,11 @@
                 <div style="margin-top:20px;">
                     <h2>Done!</h2>
                     {{range .media}}
-                    <div class="mb-4">
+                    <div class="mb-4 text-left result-card">
+                        {{ if .IsAudio }}<span class="media-pill pill-audio">AUDIO</span>{{ else }}<span class="media-pill pill-video">VIDEO</span>{{ end }}
+                        <div class="media-title">{{.Title}}</div>
                         <a style="color: dodgerblue" href="/download?id={{.Id}}">{{.Name}}</a>
-                        <small>{{.HumanSize}}</small><br>
+                        <small class="d-block">{{.HumanSize}}</small>
                         {{ if .IsAudio }}
                         <audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;">
                             <source src="/download?id={{.Id}}" />
@@ -279,8 +305,8 @@
                             <source src="/download?id={{.Id}}" type="video/mp4" />
                         </video>
                         {{ end }}
-                        <div class="mt-2">
-                            <a class="btn btn-sm btn-success" href="/download?id={{.Id}}" download="{{.Name}}">Download</a>
+                        <div class="mt-2 result-actions">
+                            <a class="btn btn-sm btn-success" href="/download?id={{.Id}}" download="{{.DownloadName}}">Download</a>
                         </div>
                     </div>
                     {{ end }}
@@ -306,7 +332,7 @@
         <footer>
             <div>
                 <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> version {{ $.ytDlpVersion }}<br>
-                <p><a href="/about">about media-roller</a></p>
+                <p><a href="/about">about Ydown</a></p>
             </div>
         </footer>
     </div>

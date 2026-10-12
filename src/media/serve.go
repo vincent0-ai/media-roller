@@ -3,8 +3,10 @@ package media
 import (
 	"github.com/rs/zerolog/log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 /**
@@ -33,10 +35,10 @@ func streamFileToClientById(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	streamFileToClient(w, r, filename)
+	streamFileToClient(w, r, filename, downloadDisplayName(id, filepath.Base(filename)))
 }
 
-func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string) {
+func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string, displayName string) {
 	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		log.Error().Msgf("error opening file %s: %v", filename, err)
@@ -44,11 +46,17 @@ func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string)
 		return
 	}
 
+	if strings.TrimSpace(displayName) == "" {
+		displayName = filepath.Base(filename)
+	}
+
 	// Tell Cloudflare and browsers to cache this media for 7 days
 	w.Header().Set("Cache-Control", "public, max-age=604800")
-	
-	// Set Content-Disposition to inline for native browser playback
-	w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(filename)+"\"")
+
+	// Inline for native browser playback, but named after the original
+	// video title so files saved to the device are recognizable.
+	// filename* carries the UTF-8 form for non-ASCII titles.
+	w.Header().Set("Content-Disposition", "inline; filename=\""+displayName+"\"; filename*=UTF-8''"+url.QueryEscape(displayName))
 
 	log.Info().Msgf("Opening file for streaming %s", filename)
 

@@ -1,25 +1,148 @@
 body {
-    background-color: #43464a;
+    background-color: #2b2e33;
+    color: #f0f1f3;
 }
 
 .container {
-    height: 100vh;
+    min-height: 100vh;
+    max-width: 720px;
+}
+
+.brand {
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.brand a:hover {
+    text-decoration: none;
+}
+
+.tagline {
+    font-size: 1.05rem;
+    color: #cfd3d8;
+}
+
+.site-chips {
+    margin: 12px 0 4px;
+}
+
+.site-chip {
+    display: inline-block;
+    background-color: #3a3e45;
+    color: #dfe3e8;
+    border-radius: 999px;
+    padding: 3px 12px;
+    margin: 0 6px 8px 0;
+    font-size: 0.8rem;
+}
+
+.steps {
+    display: inline-block;
+    text-align: left;
+    color: #b9bec5;
+    font-size: 0.92rem;
+    margin: 10px 0 6px;
+    padding-left: 22px;
+}
+
+.steps li {
+    margin-bottom: 2px;
 }
 
 .download-progress-shell {
     text-align: left;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #34373d;
+    border: 1px solid #454a52;
     border-radius: 14px;
     padding: 1rem 1rem 1.1rem;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
 }
 
 .download-progress-track {
     height: 1rem;
-    background-color: rgba(255, 255, 255, 0.14);
+    background-color: #4a4f57;
 }
 
 .download-progress-shell .progress-bar {
     transition: width 0.25s ease;
+}
+
+.result-card {
+    background: #34373d;
+    border: 1px solid #454a52;
+    border-radius: 14px;
+    padding: 14px 16px;
+}
+
+.media-pill {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-bottom: 8px;
+}
+
+.pill-video {
+    background-color: #1f6feb;
+    color: #fff;
+}
+
+.pill-audio {
+    background-color: #8250df;
+    color: #fff;
+}
+
+.media-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+    margin-bottom: 2px;
+}
+
+.result-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.result-actions .btn {
+    margin-right: 0;
+}
+
+.recent-item {
+    margin-bottom: 8px;
+    overflow-wrap: anywhere;
+}
+
+footer {
+    padding: 18px 0 26px;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 576px) {
+    .display-4 {
+        font-size: 2.4rem;
+    }
+
+    .tagline {
+        font-size: 0.95rem;
+    }
+
+    .btn {
+        min-height: 42px;
+    }
+
+    .btn-sm {
+        min-height: 36px;
+    }
+
+    .result-actions .btn {
+        flex: 1 1 auto;
+        text-align: center;
+    }
+
+    video, audio {
+        max-width: 100%;
+    }
 }
