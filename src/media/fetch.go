@@ -8,6 +8,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"html/template"
 	"media-roller/src/utils"
+	"media-roller/templates"
 	"net"
 	"net/http"
 	"net/url"
@@ -47,8 +48,13 @@ var fetchIndexTmpl *template.Template
 
 // InitTemplates parses HTML templates after startup logging, so a missing
 // file can never kill the process before it logs anything. Called from main.
+// Templates are embedded in the binary first, with a filesystem fallback
+// for local development.
 func InitTemplates() error {
-	t, err := template.ParseFiles("templates/media/index.html")
+	t, err := template.ParseFS(templates.Files, "media/index.html")
+	if err != nil {
+		t, err = template.ParseFiles("templates/media/index.html")
+	}
 	if err != nil {
 		return err
 	}
@@ -107,6 +113,7 @@ func FetchMedia(w http.ResponseWriter, r *http.Request) {
 		"ytDlpVersion": CachedYtDlpVersion,
 		"isAudio":      isAudio,
 		"quality":      quality,
+		"preset":       args["preset"],
 		"job":          job.Snapshot(),
 	})
 }
@@ -179,6 +186,11 @@ func getUrl(r *http.Request) (string, map[string]string) {
 		args["quality"] = "720"
 	default:
 		args["quality"] = "720"
+	}
+
+	// iOS preset: H.264/AAC output savable directly to Photos.
+	if preset := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("preset"))); preset != "" {
+		args["preset"] = preset
 	}
 
 	return u, args
@@ -336,6 +348,12 @@ func findBrowserIndex(browser string, browsers []string) int {
 }
 
 func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser string, updateProgress func(int, string)) (string, string, error) {
+	cookieFile, cookieErr := configuredCookieFile(requestArgs)
+	if cookieErr != nil {
+		message := "Unable to access cookies.txt in MR_COOKIES_DIR. Check the file and directory permissions."
+		return "", message, errors.New(message)
+	}
+
 	id := GetMD5Hash(url, requestArgs)
 	name := getMediaDirectory(id) + "%(id)s.%(ext)s"
 
@@ -371,6 +389,10 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 		defaultArgs["--format"] = "bestaudio[ext=m4a]/bestaudio/best"
 		defaultArgs["--audio-format"] = "mp3"
 		defaultArgs["--audio-quality"] = "128K"
+	} else if strings.ToLower(strings.TrimSpace(requestArgs["preset"])) == "ios" {
+		// iOS preset: prefer natively Photos-compatible streams; the
+		// post-download ffmpeg pass guarantees H.264/AAC + faststart.
+		defaultArgs["--format"] = "bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a]/b[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best"
 	} else {
 		// Cap height to the requested quality. Remux (not recode) keeps
 		// CPU low; h264 sort keeps max device compatibility.
@@ -403,8 +425,8 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	}
 
 	for arg, value := range requestArgs {
-		if arg == "quality" {
-			continue // internal only, not a yt-dlp flag
+		if arg == "quality" || arg == "preset" {
+			continue // internal only, not yt-dlp flags
 		}
 		args = append(args, arg)
 		if value != "" {
@@ -426,6 +448,9 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	}
 
 	args = append(args, url)
+	if cookieFile != "" {
+		args = append([]string{"--cookies", cookieFile}, args...)
+	}
 
 	cmd := exec.Command("yt-dlp", args...)
 
@@ -434,6 +459,13 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	stderrIn, _ := cmd.StderrPipe()
 
 	var errStdout, errStderr error
+
+	// Downloader diagnostics can contain cookie values: never echo them
+	// to the console when a cookie file is in play.
+	var consoleOut, consoleErr io.Writer
+	if cookieFile == "" {
+		consoleOut, consoleErr = os.Stdout, os.Stderr
+	}
 
 	err := cmd.Start()
 	if err != nil {
@@ -446,11 +478,11 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		errStdout = scanCommandOutput(stdoutIn, &stdoutBuf, os.Stdout, updateProgress)
+		errStdout = scanCommandOutput(stdoutIn, &stdoutBuf, consoleOut, updateProgress)
 	}()
 	go func() {
 		defer wg.Done()
-		errStderr = scanCommandOutput(stderrIn, &stderrBuf, os.Stderr, updateProgress)
+		errStderr = scanCommandOutput(stderrIn, &stderrBuf, consoleErr, updateProgress)
 	}()
 	wg.Wait()
 	log.Info().Msgf("Done with %s", id)
@@ -458,6 +490,10 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	err = cmd.Wait()
 	if err != nil {
 		log.Error().Err(err).Msgf("cmd.Run() failed with %s", err)
+		if cookieFile != "" {
+			message := "Download failed with cookies. Check that cookies.txt is writable and contains a valid, fresh cookie export, or remove it to retry without cookies."
+			return "", message, errors.New(message)
+		}
 		fullError := strings.TrimSpace(stderrBuf.String())
 		userMessage := extractUserFriendlyError(fullError)
 		log.Error().Msgf("Full error output for browser=%s: %s", browser, fullError)
@@ -468,7 +504,41 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 		log.Error().Msgf("failed to capture stderr: %v", errStderr)
 	}
 
+	if strings.ToLower(strings.TrimSpace(requestArgs["preset"])) == "ios" {
+		if updateProgress != nil {
+			updateProgress(100, "Converting for iOS")
+		}
+		if err := ensureIosCompatible(id); err != nil {
+			message := "Downloaded media could not be converted to iOS-compatible H.264/AAC MP4."
+			log.Error().Err(err).Msg(message)
+			return "", message, err
+		}
+	}
+
 	return id, "", nil
+}
+
+func ensureIosCompatible(id string) error {
+	files, err := getAllFilesForId(id)
+	if err != nil {
+		return err
+	}
+	for _, media := range files {
+		input := getMediaDirectory(id) + media.Name
+		tmp := input + ".ios.tmp.mp4"
+		cmd := exec.Command("ffmpeg", "-y", "-i", input, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", tmp)
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("ffmpeg iOS compatibility conversion failed: %w: %s", err, strings.TrimSpace(stderrBuf.String()))
+		}
+		if err := os.Rename(tmp, input); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	return nil
 }
 
 func scanCommandOutput(reader io.Reader, buffer *bytes.Buffer, writer io.Writer, updateProgress func(int, string)) error {

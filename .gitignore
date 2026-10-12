@@ -1,4 +1,6 @@
 .idea/
 download/
+cookies/
+*cookies*.txt
 .DS_Store
 media-roller

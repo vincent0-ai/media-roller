@@ -31,7 +31,7 @@
                             .isAudio }}checked{{ end }}>
                         <label class="form-check-label" for="audioOnly">Audio Only</label>
                     </div>
-                    <div class="form-group text-left" style="margin-bottom: 20px; max-width: 220px;">
+                    <div class="form-group text-left" style="margin-bottom: 12px; max-width: 220px;">
                         <label for="quality"><small>Quality (saves data & time)</small></label>
                         <select name="quality" id="quality" class="form-control form-control-sm">
                             <option value="360" {{ if eq .quality "360" }}selected{{ end }}>360p — smallest</option>
@@ -40,6 +40,10 @@
                             <option value="1080" {{ if eq .quality "1080" }}selected{{ end }}>1080p</option>
                             <option value="best" {{ if eq .quality "best" }}selected{{ end }}>Best — largest</option>
                         </select>
+                    </div>
+                    <div class="form-check text-left" style="margin-bottom: 20px;">
+                        <input type="checkbox" class="form-check-input" id="iosPreset" name="preset" value="ios" {{ if eq .preset "ios" }}checked{{ end }}>
+                        <label class="form-check-label" for="iosPreset">iOS compatible <small class="text-muted">(H.264, saves to Photos)</small></label>
                     </div>
                 </form>
                 {{ if .job }}
@@ -289,11 +293,11 @@
                     <h5>iOS Integration</h5>
                     <p class="mb-2"><small>Install the iOS Shortcut for one-click downloads directly from your share
                             sheet:</small></p>
-                    <a href="https://www.icloud.com/shortcuts/d3b05b78eb434496ab28dd91e1c79615" target="_blank"
+                    <a href="https://www.icloud.com/shortcuts/12d5ab16ee3b4aa48cccfcb305ca03e4" target="_blank"
                         class="btn btn-sm btn-outline-light">Download iCloud Shortcut</a>
                     <p class="mt-2 mb-0" style="color: #ccc;"><small><em>Note: Edit the shortcut after installing to
                                 point to this server's address. Append <code>&audio=true</code> to the endpoint for an
-                                audio-only shortcut.</em></small></p>
+                                audio-only shortcut, or <code>&preset=ios</code> for iOS Photos-compatible video.</em></small></p>
                 </div>
             </div>
         </div>

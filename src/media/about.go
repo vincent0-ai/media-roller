@@ -3,6 +3,7 @@ package media
 import (
 	"html/template"
 	"media-roller/src/utils"
+	"media-roller/templates"
 	"net/http"
 	"regexp"
 	"strings"
@@ -14,7 +15,10 @@ import (
 var aboutIndexTmpl *template.Template
 
 func initAboutTemplates() error {
-	t, err := template.ParseFiles("templates/media/about.html")
+	t, err := template.ParseFS(templates.Files, "media/about.html")
+	if err != nil {
+		t, err = template.ParseFiles("templates/media/about.html")
+	}
 	if err != nil {
 		return err
 	}
