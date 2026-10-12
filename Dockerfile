@@ -10,13 +10,16 @@ COPY go.mod go.mod
 COPY go.sum go.sum
 
 RUN go mod download
-RUN go build -x -o media-roller ./src
+RUN CGO_ENABLED=0 go build -o media-roller ./src
 
-# yt-dlp needs python
-FROM python:3.15.0a8-alpine3.23
+# yt-dlp needs python. Pinned to stable 3.13 (3.15 alphas break pip/yt-dlp in prod).
+FROM python:3.13-alpine
 
 # This is where the downloaded files will be saved in the container.
 ENV MR_DOWNLOAD_DIR="/download"
+# Default listen port. Platforms like Railway/Render/Dokploy/Coolify inject
+# PORT at runtime — the app respects MR_PORT first, then PORT (see src/main.go).
+ENV PORT="3000"
 
 RUN apk add --update --no-cache \
     # https://github.com/yt-dlp/yt-dlp/issues/14404 \
@@ -37,6 +40,10 @@ COPY static /app/static
 
 WORKDIR /app
 
+RUN mkdir -p /download
+
+EXPOSE 3000
+
 RUN pip install curl_cffi --upgrade --pre
 RUN pip install -U yt-dlp-ejs
 
@@ -50,5 +57,8 @@ RUN yt-dlp --update --update-to nightly
 # Sanity check
 RUN yt-dlp --version && \
     ffmpeg -version
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-3000}/health || exit 1
 
 ENTRYPOINT ["/app/media-roller"]
