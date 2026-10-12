@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"media-roller/src/media"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +40,88 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+func getEnvInt(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+		return v
+	}
+	log.Warn().Msgf("Invalid %s=%q, using default %d", key, raw, def)
+	return def
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.Index(xff, ","); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+type rateEntry struct {
+	window time.Time
+	count  int
+}
+
+var rateMu sync.Mutex
+var rateHits = map[string]*rateEntry{}
+
+// rateLimit aborts with 429 when an IP exceeds perMinute requests in a
+// rolling 1-minute fixed window. Health/static are exempt (checked by path).
+func rateLimit(perMinute int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/health") ||
+				strings.HasPrefix(r.URL.Path, "/api/health") ||
+				strings.HasPrefix(r.URL.Path, "/static") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ip := clientIP(r)
+			now := time.Now()
+			rateMu.Lock()
+			e, ok := rateHits[ip]
+			if !ok || now.Sub(e.window) >= time.Minute {
+				e = &rateEntry{window: now, count: 0}
+				rateHits[ip] = e
+			}
+			e.count++
+			count := e.count
+			// Opportunistic cleanup to bound memory.
+			if len(rateHits) > 5000 && now.Second()%10 == 0 {
+				for k, v := range rateHits {
+					if now.Sub(v.window) > 2*time.Minute {
+						delete(rateHits, k)
+					}
+				}
+			}
+			rateMu.Unlock()
+			if count > perMinute {
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "Rate limit exceeded. Try again in a minute.", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	// Ensure the download directory exists before anything tries to use it.
 	// Matches media.getDownloadDir() logic: MR_DOWNLOAD_DIR or "downloads/".
@@ -56,6 +140,8 @@ func main() {
 
 	// setup routes
 	router := chi.NewRouter()
+	router.Use(securityHeaders)
+	router.Use(rateLimit(getEnvInt("MR_RATE_LIMIT_PER_MIN", 120)))
 	router.Get("/health", healthHandler)
 	router.Get("/api/health", healthHandler)
 	router.Route("/", func(r chi.Router) {
@@ -81,8 +167,16 @@ func main() {
 	go media.StartCacheCleanup()
 
 	port := getPort()
-	// The HTTP Server
-	server := &http.Server{Addr: ":" + port, Handler: router}
+	// Timeouts: WriteTimeout must cover slow video streams, but bounded.
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 13, // 8KB
+	}
 	log.Info().Msgf("Starting server on :%s (MR_DOWNLOAD_DIR=%s)", port, downloadDir)
 
 	// Server run context

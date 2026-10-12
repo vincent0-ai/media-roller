@@ -8,7 +8,9 @@ import (
 	"github.com/dustin/go-humanize"
 	"html/template"
 	"media-roller/src/utils"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -31,6 +33,7 @@ import (
 )
 
 var ErrMissingURL = errors.New("missing URL")
+var ErrURLNotAllowed = errors.New("URL not allowed")
 
 type Media struct {
 	Id          string
@@ -165,6 +168,9 @@ func getMediaResultsWithProgress(inputUrl string, args map[string]string, update
 	}
 
 	url := utils.NormalizeUrl(inputUrl)
+	if err := validateDownloadURL(url); err != nil {
+		return nil, err.Error(), err
+	}
 	log.Info().Msgf("Got input '%s' and extracted '%s' with args %v", inputUrl, url, args)
 
 	// NOTE: This system is for a simple use case, meant to run at home. This is not a great design for a robust system.
@@ -569,6 +575,42 @@ func isValidId(id string) bool {
 	return idCharSet(id)
 }
 
+// validateDownloadURL blocks SSRF targets (localhost, private ranges,
+// cloud metadata) and non-http(s) schemes before yt-dlp ever runs.
+func validateDownloadURL(raw string) error {
+	if len(raw) == 0 || len(raw) > 2048 {
+		return ErrURLNotAllowed
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ErrURLNotAllowed
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ErrURLNotAllowed
+	}
+	if u.User != nil {
+		return ErrURLNotAllowed
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return ErrURLNotAllowed
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".lan") {
+		return ErrURLNotAllowed
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return ErrURLNotAllowed
+		}
+		// 100.64.0.0/10 (CGNAT) and cloud metadata endpoint.
+		if ip.IsUnspecified() || host == "169.254.169.254" {
+			return ErrURLNotAllowed
+		}
+	}
+	return nil
+}
+
 func getDownloadDir() string {
 	dir := os.Getenv("MR_DOWNLOAD_DIR")
 	if dir != "" {
@@ -629,11 +671,13 @@ func CleanOldCache() {
 func StartCacheCleanup() {
 	// Run once on startup
 	CleanOldCache()
+	cleanupExpiredJobs(2 * time.Hour)
 
 	ticker := time.NewTicker(24 * time.Hour)
 	go func() {
 		for range ticker.C {
 			CleanOldCache()
+			cleanupExpiredJobs(2 * time.Hour)
 		}
 	}()
 }

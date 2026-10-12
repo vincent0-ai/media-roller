@@ -3,6 +3,9 @@ package media
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +40,44 @@ var downloadJobRegistry = struct {
 	jobs map[string]*DownloadJob
 }{jobs: map[string]*DownloadJob{}}
 
+// downloadSlots caps concurrent yt-dlp/ffmpeg work. Others wait queued.
+// Sized from MR_MAX_CONCURRENT_DOWNLOADS (default 2, clamped 1-8).
+var downloadSlots = makeDownloadSlots()
+
+func makeDownloadSlots() chan struct{} {
+	n := 2
+	if raw := strings.TrimSpace(os.Getenv("MR_MAX_CONCURRENT_DOWNLOADS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 1 && v <= 8 {
+			n = v
+		}
+	}
+	return make(chan struct{}, n)
+}
+
+func maxQueuedJobs() int {
+	if raw := strings.TrimSpace(os.Getenv("MR_MAX_QUEUED_JOBS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 && v <= 200 {
+			return v
+		}
+	}
+	return 20
+}
+
+func busyJobs() int {
+	n := 0
+	downloadJobRegistry.mu.RLock()
+	for _, j := range downloadJobRegistry.jobs {
+		j.mu.RLock()
+		s := j.Status
+		j.mu.RUnlock()
+		if s == "queued" || s == "running" {
+			n++
+		}
+	}
+	downloadJobRegistry.mu.RUnlock()
+	return n
+}
+
 func StartDownloadJob(url string, args map[string]string) *DownloadJob {
 	id := GetMD5Hash(url, args)
 
@@ -53,6 +94,25 @@ func StartDownloadJob(url string, args map[string]string) *DownloadJob {
 	}
 
 	job = newDownloadJob(id, url, args)
+	// Reject with a clear "busy" job instead of letting the VPS OOM.
+	// NOTE: registry write lock is already held here, so count inline
+	// instead of calling busyJobs() (would deadlock on RLock).
+	busy := 0
+	for _, j := range downloadJobRegistry.jobs {
+		j.mu.RLock()
+		s := j.Status
+		j.mu.RUnlock()
+		if s == "queued" || s == "running" {
+			busy++
+		}
+	}
+	if busy >= cap(downloadSlots)+maxQueuedJobs() {
+		job.setStatus("error", 0, "Server busy, try again in a minute", "Server busy, try again in a minute")
+		downloadJobRegistry.jobs[id] = job
+		downloadJobRegistry.mu.Unlock()
+		log.Warn().Msgf("Rejecting download job %s: server busy", id)
+		return job
+	}
 	downloadJobRegistry.jobs[id] = job
 	downloadJobRegistry.mu.Unlock()
 
@@ -87,6 +147,10 @@ func newDownloadJob(id string, url string, args map[string]string) *DownloadJob 
 }
 
 func runDownloadJob(job *DownloadJob) {
+	job.setStatus("queued", 0, "Queued, waiting for a download slot", "")
+	downloadSlots <- struct{}{}
+	defer func() { <-downloadSlots }()
+
 	job.setStatus("running", 0, "Starting download", "")
 	medias, ytdlpErrorMessage, err := getMediaResultsWithProgress(job.URL, job.Args, job.updateProgress)
 	if err != nil {
@@ -158,4 +222,22 @@ func (job *DownloadJob) Snapshot() *DownloadJobSnapshot {
 
 func (job *DownloadJob) writeSnapshot(w http.ResponseWriter) error {
 	return json.NewEncoder(w).Encode(job.Snapshot())
+}
+
+// cleanupExpiredJobs bounds in-memory registry growth. Terminal jobs
+// (completed/error) older than maxAge are dropped; progress can be re-polled
+// by re-submitting the same URL (same deterministic job ID).
+func cleanupExpiredJobs(maxAge time.Duration) {
+	cutoff := time.Now().Add(-maxAge)
+	downloadJobRegistry.mu.Lock()
+	for id, j := range downloadJobRegistry.jobs {
+		j.mu.RLock()
+		s := j.Status
+		updated := j.updatedAt
+		j.mu.RUnlock()
+		if (s == "completed" || s == "error") && updated.Before(cutoff) {
+			delete(downloadJobRegistry.jobs, id)
+		}
+	}
+	downloadJobRegistry.mu.Unlock()
 }
