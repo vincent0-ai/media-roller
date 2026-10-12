@@ -43,7 +43,30 @@ type Media struct {
 	IsAudio     bool
 }
 
-var fetchIndexTmpl = template.Must(template.ParseFiles("templates/media/index.html"))
+var fetchIndexTmpl *template.Template
+
+// InitTemplates parses HTML templates after startup logging, so a missing
+// file can never kill the process before it logs anything. Called from main.
+func InitTemplates() error {
+	t, err := template.ParseFiles("templates/media/index.html")
+	if err != nil {
+		return err
+	}
+	fetchIndexTmpl = t
+	return initAboutTemplates()
+}
+
+func renderIndex(w http.ResponseWriter, data map[string]any) {
+	if fetchIndexTmpl == nil {
+		log.Error().Msg("index template not loaded")
+		http.Error(w, "Server starting, retry in a few seconds", http.StatusServiceUnavailable)
+		return
+	}
+	if err := fetchIndexTmpl.Execute(w, data); err != nil {
+		log.Error().Msgf("Error rendering template: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+	}
+}
 
 // Where the media files are saved. Always has a trailing slash
 var downloadDir = getDownloadDir()
@@ -52,26 +75,18 @@ var ytDlpProgressRegexp = regexp.MustCompile(`^\[download\]\s+(\d+(?:\.\d+)?)%`)
 var ytDlpStageRegexp = regexp.MustCompile(`^\[(ExtractAudio|Merger|FixupM4a|VideoConvertor)\]`)
 
 func Index(w http.ResponseWriter, _ *http.Request) {
-	data := map[string]string{
+	renderIndex(w, map[string]any{
 		"ytDlpVersion": CachedYtDlpVersion,
-	}
-	if err := fetchIndexTmpl.Execute(w, data); err != nil {
-		log.Error().Msgf("Error rendering template: %v", err)
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-	}
+	})
 }
 
 func FetchMedia(w http.ResponseWriter, r *http.Request) {
 	url, args := getUrl(r)
 	if url == "" {
-		data := map[string]any{
+		renderIndex(w, map[string]any{
 			"url":          url,
 			"ytDlpVersion": CachedYtDlpVersion,
-		}
-		if err := fetchIndexTmpl.Execute(w, data); err != nil {
-			log.Error().Msgf("Error rendering template: %v", err)
-			http.Error(w, "Internal error", http.StatusInternalServerError)
-		}
+		})
 		return
 	}
 
@@ -83,17 +98,17 @@ func FetchMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := StartDownloadJob(url, args)
-	data := map[string]any{
+	quality := args["quality"]
+	if quality == "" {
+		quality = "720"
+	}
+	renderIndex(w, map[string]any{
 		"url":          url,
 		"ytDlpVersion": CachedYtDlpVersion,
 		"isAudio":      isAudio,
+		"quality":      quality,
 		"job":          job.Snapshot(),
-	}
-
-	if err := fetchIndexTmpl.Execute(w, data); err != nil {
-		log.Error().Msgf("Error rendering template: %v", err)
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-	}
+	})
 }
 
 func FetchMediaApi(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +168,17 @@ func getUrl(r *http.Request) (string, map[string]string) {
 
 	if strings.ToLower(r.URL.Query().Get("audio")) == "true" {
 		args["-x"] = ""
+	}
+
+	// Quality selector: 360/480/720/1080/best. Defaults to 720p to save
+	// bandwidth + avoid forced re-encodes on the VPS.
+	switch q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("quality"))); q {
+	case "360", "480", "720", "1080", "best":
+		args["quality"] = q
+	case "":
+		args["quality"] = "720"
+	default:
+		args["quality"] = "720"
 	}
 
 	return u, args
@@ -346,9 +372,22 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 		defaultArgs["--audio-format"] = "mp3"
 		defaultArgs["--audio-quality"] = "128K"
 	} else {
-		defaultArgs["--format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+		// Cap height to the requested quality. Remux (not recode) keeps
+		// CPU low; h264 sort keeps max device compatibility.
+		switch requestArgs["quality"] {
+		case "best":
+			defaultArgs["--format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+		case "1080":
+			defaultArgs["--format"] = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best"
+		case "480":
+			defaultArgs["--format"] = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/best"
+		case "360":
+			defaultArgs["--format"] = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]/best"
+		default: // "720"
+			defaultArgs["--format"] = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best"
+		}
 		defaultArgs["--merge-output-format"] = "mp4"
-		defaultArgs["--recode-video"] = "mp4"
+		defaultArgs["--remux-video"] = "mp4"
 		defaultArgs["--format-sort"] = "codec:h264"
 	}
 
@@ -364,6 +403,9 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	}
 
 	for arg, value := range requestArgs {
+		if arg == "quality" {
+			continue // internal only, not a yt-dlp flag
+		}
 		args = append(args, arg)
 		if value != "" {
 			args = append(args, value)

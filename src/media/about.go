@@ -11,7 +11,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var aboutIndexTmpl = template.Must(template.ParseFiles("templates/media/about.html"))
+var aboutIndexTmpl *template.Template
+
+func initAboutTemplates() error {
+	t, err := template.ParseFiles("templates/media/about.html")
+	if err != nil {
+		return err
+	}
+	aboutIndexTmpl = t
+	return nil
+}
 
 var newlineRegex = regexp.MustCompile("\r?\n")
 
@@ -38,6 +47,11 @@ func AboutIndex(w http.ResponseWriter, _ *http.Request) {
 		"cpus":           gi.CPUs,
 	}
 
+	if aboutIndexTmpl == nil {
+		log.Error().Msg("about template not loaded")
+		http.Error(w, "Server starting, retry in a few seconds", http.StatusServiceUnavailable)
+		return
+	}
 	if err := aboutIndexTmpl.Execute(w, data); err != nil {
 		log.Error().Msgf("Error rendering template: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)

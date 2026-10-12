@@ -123,6 +123,11 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func main() {
+	// Very first line: proves the binary started even if something below fails.
+	log.Info().Msg("media-roller starting...")
+	log.Info().Msgf("env PORT=%q MR_PORT=%q MR_DOWNLOAD_DIR=%q",
+		os.Getenv("PORT"), os.Getenv("MR_PORT"), os.Getenv("MR_DOWNLOAD_DIR"))
+
 	// Ensure the download directory exists before anything tries to use it.
 	// Matches media.getDownloadDir() logic: MR_DOWNLOAD_DIR or "downloads/".
 	downloadDir := strings.TrimSpace(os.Getenv("MR_DOWNLOAD_DIR"))
@@ -133,9 +138,21 @@ func main() {
 		log.Fatal().Err(err).Msgf("Failed to create download directory %q", downloadDir)
 	}
 
-	// Log working directory to make missing templates/static easy to diagnose.
+	// Startup self-check: log everything Dokploy debugging needs.
 	if cwd, err := os.Getwd(); err == nil {
 		log.Info().Msgf("Working directory: %s", cwd)
+	}
+	for _, f := range []string{"templates/media/index.html", "templates/media/about.html", "static/css/style.css"} {
+		if st, err := os.Stat(f); err != nil {
+			log.Error().Msgf("SELF-CHECK missing %s: %v", f, err)
+		} else {
+			log.Info().Msgf("SELF-CHECK ok %s (%d bytes)", f, st.Size())
+		}
+	}
+	if err := media.InitTemplates(); err != nil {
+		log.Error().Err(err).Msg("SELF-CHECK templates failed to parse; pages will 503 until fixed")
+	} else {
+		log.Info().Msg("SELF-CHECK templates parsed")
 	}
 
 	// setup routes
@@ -248,8 +265,9 @@ func fileServer(r chi.Router, public string, static string) {
 
 	root, _ := filepath.Abs(static)
 	if _, err := os.Stat(root); os.IsNotExist(err) {
-		log.Error().Msgf("Static documents directory not found: %s (cwd check above)", root)
-		panic("Static Documents Directory Not Found: " + root)
+		// Non-fatal: the app must stay up (health + logs) even with broken assets.
+		log.Error().Msgf("Static documents directory not found: %s — serving without /static", root)
+		return
 	}
 
 	fs := http.StripPrefix(public, http.FileServer(http.Dir(root)))

@@ -26,10 +26,20 @@
                             <button class="btn btn-primary" type="submit" id="button-submit">Submit</button>
                         </div>
                     </div>
-                    <div class="form-check text-left" style="margin-bottom: 20px;">
+                    <div class="form-check text-left" style="margin-bottom: 12px;">
                         <input type="checkbox" class="form-check-input" id="audioOnly" name="audio" value="true" {{ if
                             .isAudio }}checked{{ end }}>
                         <label class="form-check-label" for="audioOnly">Audio Only</label>
+                    </div>
+                    <div class="form-group text-left" style="margin-bottom: 20px; max-width: 220px;">
+                        <label for="quality"><small>Quality (saves data & time)</small></label>
+                        <select name="quality" id="quality" class="form-control form-control-sm">
+                            <option value="360" {{ if eq .quality "360" }}selected{{ end }}>360p — smallest</option>
+                            <option value="480" {{ if eq .quality "480" }}selected{{ end }}>480p</option>
+                            <option value="720" {{ if or (eq .quality "720") (not .quality) }}selected{{ end }}>720p — balanced</option>
+                            <option value="1080" {{ if eq .quality "1080" }}selected{{ end }}>1080p</option>
+                            <option value="best" {{ if eq .quality "best" }}selected{{ end }}>Best — largest</option>
+                        </select>
                     </div>
                 </form>
                 {{ if .job }}
@@ -47,6 +57,13 @@
                     <p id="progress-message" class="mt-2 mb-0 text-left text-muted">Queued</p>
                 </div>
                 <div id="download-results" style="margin-top:20px;"></div>
+                <div id="recent-shell" class="mt-4 text-left" style="display:none; background: rgba(0,0,0,0.1); padding: 15px; border-radius: 8px;">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <h5 class="mb-0">Recent on this device</h5>
+                        <button id="recent-clear" class="btn btn-sm btn-outline-light" type="button">Clear</button>
+                    </div>
+                    <div id="recent-list"></div>
+                </div>
                 <script>
                     (function () {
                         const progressShell = document.getElementById('download-progress');
@@ -79,6 +96,59 @@
                                 .replaceAll("'", '&#39;');
                         }
 
+                        function mediaUrl(id) {
+                            return '/download?id=' + encodeURIComponent(id);
+                        }
+
+                        function copyLink(id) {
+                            const abs = new URL(mediaUrl(id), window.location.origin).href;
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(abs);
+                            } else {
+                                window.prompt('Copy link:', abs);
+                            }
+                        }
+
+                        function shareLink(id, name) {
+                            const abs = new URL(mediaUrl(id), window.location.origin).href;
+                            if (navigator.share) {
+                                navigator.share({ title: name || 'media-roller', url: abs });
+                            } else {
+                                copyLink(id);
+                            }
+                        }
+
+                        function saveRecent(items) {
+                            try {
+                                const key = 'mr_history';
+                                const prev = JSON.parse(window.localStorage.getItem(key) || '[]');
+                                const seen = new Set(prev.map(function (e) { return e.Id; }));
+                                for (const item of (items || [])) {
+                                    if (!seen.has(item.Id)) {
+                                        prev.unshift({ Id: item.Id, Name: item.Name, HumanSize: item.HumanSize || '', IsAudio: !!item.IsAudio, at: Date.now() });
+                                        seen.add(item.Id);
+                                    }
+                                }
+                                window.localStorage.setItem(key, JSON.stringify(prev.slice(0, 10)));
+                                renderRecent();
+                            } catch (e) { /* private mode etc — ignore */ }
+                        }
+
+                        function renderRecent() {
+                            const shell = document.getElementById('recent-shell');
+                            const list = document.getElementById('recent-list');
+                            if (!shell || !list) { return; }
+                            let items = [];
+                            try { items = JSON.parse(window.localStorage.getItem('mr_history') || '[]'); } catch (e) { items = []; }
+                            if (!items.length) { shell.style.display = 'none'; return; }
+                            shell.style.display = 'block';
+                            list.innerHTML = items.map(function (item) {
+                                return '<div class="mb-2"><a style="color: dodgerblue" href="' + escapeHtml(mediaUrl(item.Id)) + '">' +
+                                    escapeHtml(item.Name || item.Id) + '</a>' +
+                                    (item.HumanSize ? ' <small class="text-muted">' + escapeHtml(item.HumanSize) + '</small>' : '') + '</div>';
+                            }).join('');
+                        }
+
                         function renderResults(media) {
                             if (!results) {
                                 return;
@@ -90,18 +160,28 @@
 
                             let html = '<div style="margin-top:20px;"><h2>Done!</h2>';
                             for (const item of media) {
+                                const link = mediaUrl(item.Id);
                                 html += '<div class="mb-4 text-left">';
-                                html += '<a style="color: dodgerblue" href="/download?id=' + escapeHtml(item.Id) + '">' + escapeHtml(item.Name) + '</a>';
+                                html += '<a style="color: dodgerblue" href="' + escapeHtml(link) + '">' + escapeHtml(item.Name) + '</a>';
                                 html += '<small class="d-block">' + escapeHtml(item.HumanSize) + '</small>';
                                 if (item.IsAudio) {
-                                    html += '<audio controls class="mt-2" style="width: 250px;"><source src="/download?id=' + escapeHtml(item.Id) + '" /></audio>';
+                                    html += '<audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(link) + '" /></audio>';
                                 } else {
-                                    html += '<video controls loop width="250" class="mt-2"><source src="/download?id=' + escapeHtml(item.Id) + '" type="video/mp4" /></video>';
+                                    html += '<video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(link) + '" type="video/mp4" /></video>';
                                 }
+                                html += '<div class="mt-2"><button class="btn btn-sm btn-outline-light mr-2" data-copy="' + escapeHtml(item.Id) + '">Copy link</button> ' +
+                                    '<button class="btn btn-sm btn-outline-light" data-share="' + escapeHtml(item.Id) + '" data-name="' + escapeHtml(item.Name) + '">Share</button></div>';
                                 html += '</div>';
                             }
                             html += '</div>';
                             results.innerHTML = html;
+                            results.querySelectorAll('[data-copy]').forEach(function (btn) {
+                                btn.addEventListener('click', function () { copyLink(btn.getAttribute('data-copy')); });
+                            });
+                            results.querySelectorAll('[data-share]').forEach(function (btn) {
+                                btn.addEventListener('click', function () { shareLink(btn.getAttribute('data-share'), btn.getAttribute('data-name')); });
+                            });
+                            saveRecent(media);
                         }
 
                         function updateProgress(data) {
@@ -167,6 +247,14 @@
                             }
                         }
 
+                        const recentClear = document.getElementById('recent-clear');
+                        if (recentClear) {
+                            recentClear.addEventListener('click', function () {
+                                try { window.localStorage.removeItem('mr_history'); } catch (e) { /* ignore */ }
+                                renderRecent();
+                            });
+                        }
+                        renderRecent();
                         pollJob();
                     })();
                 </script>
@@ -180,11 +268,11 @@
                         <a style="color: dodgerblue" href="/download?id={{.Id}}">{{.Name}}</a>
                         <small>{{.HumanSize}}</small><br>
                         {{ if .IsAudio }}
-                        <audio controls class="mt-2" style="width: 250px;">
+                        <audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;">
                             <source src="/download?id={{.Id}}" />
                         </audio>
                         {{ else }}
-                        <video controls loop width="250" class="mt-2">
+                        <video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;">
                             <source src="/download?id={{.Id}}" type="video/mp4" />
                         </video>
                         {{ end }}
