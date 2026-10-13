@@ -802,10 +802,59 @@ func getEnvVars() map[string]string {
 	if ev := strings.TrimSpace(os.Getenv("MR_PROXY")); ev != "" {
 		vars["--proxy"] = ev
 	}
+	// Refuse single files bigger than this so one 4K video can't eat the VPS.
+	if ev := strings.TrimSpace(os.Getenv("MR_MAX_FILESIZE")); ev != "" {
+		vars["--max-filesize"] = ev
+	} else {
+		vars["--max-filesize"] = "500M"
+	}
 	return vars
 }
 
-// CleanOldCache deletes downloaded media directories older than 1 day
+// cacheTTL is how long finished downloads stay on disk.
+// MR_CACHE_TTL_HOURS, default 6.
+func cacheTTL() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("MR_CACHE_TTL_HOURS")); raw != "" {
+		if h, err := strconv.Atoi(raw); err == nil && h > 0 && h <= 720 {
+			return time.Duration(h) * time.Hour
+		}
+		log.Warn().Msgf("Invalid MR_CACHE_TTL_HOURS=%q, using default", raw)
+	}
+	return 6 * time.Hour
+}
+
+// maxCacheBytes caps total cache size. MR_MAX_CACHE_MB, default 2048.
+// A value of 0 disables the quota (age cleanup still applies).
+func maxCacheBytes() int64 {
+	if raw := strings.TrimSpace(os.Getenv("MR_MAX_CACHE_MB")); raw != "" {
+		if mb, err := strconv.Atoi(raw); err == nil && mb >= 0 {
+			return int64(mb) * 1024 * 1024
+		}
+		log.Warn().Msgf("Invalid MR_MAX_CACHE_MB=%q, using default", raw)
+	}
+	return 2048 * 1024 * 1024
+}
+
+func dirSizeBytes(path string) int64 {
+	var total int64
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+type cacheEntry struct {
+	path    string
+	modTime time.Time
+	size    int64
+}
+
+// CleanOldCache deletes cache directories older than the TTL, then evicts
+// oldest-first while the cache is over quota. Logs usage every run so
+// Dokploy logs double as a storage monitor.
 func CleanOldCache() {
 	log.Info().Msg("Starting cache cleanup...")
 	entries, err := os.ReadDir(downloadDir)
@@ -816,8 +865,8 @@ func CleanOldCache() {
 		return
 	}
 
-	threshold := time.Now().Add(-24 * time.Hour)
-	count := 0
+	threshold := time.Now().Add(-cacheTTL())
+	removed := 0
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -834,21 +883,61 @@ func CleanOldCache() {
 			if err := os.RemoveAll(dirPath); err != nil {
 				log.Error().Err(err).Msgf("Failed to delete old cache directory: %s", dirPath)
 			} else {
-				log.Info().Msgf("Deleted old cache directory: %s", dirPath)
-				count++
+				removed++
 			}
 		}
 	}
-	log.Info().Msgf("Cache cleanup complete. Removed %d old directories.", count)
+
+	// Quota pass: keep total under MR_MAX_CACHE_MB, oldest first.
+	quota := maxCacheBytes()
+	var kept []cacheEntry
+	var total int64
+	if quota > 0 {
+		entries, err = os.ReadDir(downloadDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				p := filepath.Join(downloadDir, entry.Name())
+				sz := dirSizeBytes(p)
+				kept = append(kept, cacheEntry{path: p, modTime: info.ModTime(), size: sz})
+				total += sz
+			}
+			sort.Slice(kept, func(i, j int) bool { return kept[i].modTime.Before(kept[j].modTime) })
+			for _, e := range kept {
+				if total <= quota {
+					break
+				}
+				if err := os.RemoveAll(e.path); err != nil {
+					log.Error().Err(err).Msgf("Failed to evict cache directory: %s", e.path)
+				} else {
+					total -= e.size
+					removed++
+				}
+			}
+		}
+	}
+
+	quotaDesc := "disabled"
+	if quota > 0 {
+		quotaDesc = strconv.Itoa(int(quota/1024/1024)) + " MB"
+	}
+	log.Info().Msgf("Cache cleanup complete. Removed %d directories. Cache now %.1f MB (TTL %s, quota %s).",
+		removed, float64(total)/1024/1024, cacheTTL().String(), quotaDesc)
 }
 
-// StartCacheCleanup runs the cleanup routine once a day
+// StartCacheCleanup runs the cleanup routine every hour
 func StartCacheCleanup() {
 	// Run once on startup
 	CleanOldCache()
 	cleanupExpiredJobs(2 * time.Hour)
 
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(1 * time.Hour)
 	go func() {
 		for range ticker.C {
 			CleanOldCache()

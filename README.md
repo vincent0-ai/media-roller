@@ -44,6 +44,9 @@ container is rejected and the app never starts.
 * `MR_MAX_CONCURRENT_DOWNLOADS` concurrent yt-dlp/ffmpeg jobs (1-8). Defaults to `2`
 * `MR_MAX_QUEUED_JOBS` queued jobs before the server answers "busy". Defaults to `20`
 * `MR_COOKIES_DIR` is the directory containing `cookies.txt`. Defaults to `cookies` (`/app/cookies` in Docker).
+* `MR_CACHE_TTL_HOURS` how long finished downloads stay on disk. Defaults to `6`
+* `MR_MAX_CACHE_MB` caps total cache size, oldest deleted first. Defaults to `2048` (`0` = no quota)
+* `MR_MAX_FILESIZE` max single download passed to yt-dlp (e.g. `500M`, `2G`). Defaults to `500M`
 
 ## Cookies
 
