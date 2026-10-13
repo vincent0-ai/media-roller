@@ -867,9 +867,14 @@ func CleanOldCache() {
 
 	threshold := time.Now().Add(-cacheTTL())
 	removed := 0
+	// Never touch folders belonging to in-flight downloads.
+	active := activeJobIDs()
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		if active[entry.Name()] {
 			continue
 		}
 
@@ -912,6 +917,9 @@ func CleanOldCache() {
 			for _, e := range kept {
 				if total <= quota {
 					break
+				}
+				if active[filepath.Base(e.path)] {
+					continue
 				}
 				if err := os.RemoveAll(e.path); err != nil {
 					log.Error().Err(err).Msgf("Failed to evict cache directory: %s", e.path)

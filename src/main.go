@@ -80,6 +80,7 @@ func rateLimit(perMinute int) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/health") ||
 				strings.HasPrefix(r.URL.Path, "/api/health") ||
+				strings.HasPrefix(r.URL.Path, "/api/progress") ||
 				strings.HasPrefix(r.URL.Path, "/static") {
 				next.ServeHTTP(w, r)
 				return

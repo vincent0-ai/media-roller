@@ -64,18 +64,23 @@ func maxQueuedJobs() int {
 }
 
 func busyJobs() int {
-	n := 0
+	return len(activeJobIDs())
+}
+
+// activeJobIDs returns IDs of jobs currently queued or running.
+func activeJobIDs() map[string]bool {
+	ids := map[string]bool{}
 	downloadJobRegistry.mu.RLock()
-	for _, j := range downloadJobRegistry.jobs {
+	for id, j := range downloadJobRegistry.jobs {
 		j.mu.RLock()
 		s := j.Status
 		j.mu.RUnlock()
 		if s == "queued" || s == "running" {
-			n++
+			ids[id] = true
 		}
 	}
 	downloadJobRegistry.mu.RUnlock()
-	return n
+	return ids
 }
 
 func StartDownloadJob(url string, args map[string]string) *DownloadJob {
