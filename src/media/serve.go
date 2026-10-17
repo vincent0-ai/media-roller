@@ -33,14 +33,43 @@ func streamFileToClientById(w http.ResponseWriter, r *http.Request, id string) {
 	if err != nil {
 		log.Error().Msgf("error getting file from id %s: %v", id, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	streamFileToClient(w, r, filename, downloadDisplayName(id, filepath.Base(filename)))
+	streamFileToClient(w, r, id, filename, downloadDisplayName(id, filepath.Base(filename)))
 }
 
-func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string, displayName string) {
+// countingResponseWriter tracks how much of a file was actually delivered so
+// media is only purged after it has been fully served, never mid-preview/seek.
+type countingResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (c *countingResponseWriter) WriteHeader(code int) {
+	if !c.wroteHeader {
+		c.status = code
+		c.wroteHeader = true
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *countingResponseWriter) Write(p []byte) (int, error) {
+	if !c.wroteHeader {
+		c.status = http.StatusOK
+		c.wroteHeader = true
+	}
+	n, err := c.ResponseWriter.Write(p)
+	c.bytes += int64(n)
+	return n, err
+}
+
+func streamFileToClient(w http.ResponseWriter, r *http.Request, id string, filename string, displayName string) {
 	// Check if file exists
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
+	info, err := os.Stat(filename)
+	if err != nil {
 		log.Error().Msgf("error opening file %s: %v", filename, err)
 		http.Error(w, "File not found.", 404)
 		return
@@ -60,6 +89,23 @@ func streamFileToClient(w http.ResponseWriter, r *http.Request, filename string,
 
 	log.Info().Msgf("Opening file for streaming %s", filename)
 
+	cw := &countingResponseWriter{ResponseWriter: w}
+
+	// Mark this id as in use so no cleanup pass can delete it mid-stream.
+	markServing(id)
+	defer unmarkServing(id)
+
 	// Serve the file; this natively handles Content-Type sniffing and HTTP Range requests (Partial Content 206)
-	http.ServeFile(w, r, filename)
+	http.ServeFile(cw, r, filename)
+
+	// Purge only after a real, complete download. In-page previews (the player)
+	// pass ?preview=1 and must never evict media the user may still watch or
+	// download; seeks/partial ranges likewise never trigger cleanup.
+	if id == "" || r.URL.Query().Get("preview") != "" {
+		return
+	}
+	if info.Size() > 0 && cw.bytes >= info.Size() &&
+		(cw.status == http.StatusOK || cw.status == http.StatusPartialContent) {
+		scheduleMediaDeletion(id)
+	}
 }

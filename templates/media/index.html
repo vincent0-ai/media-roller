@@ -120,6 +120,10 @@
                             return '/download?id=' + encodeURIComponent(id);
                         }
 
+                        function previewUrl(id) {
+                            return mediaUrl(id) + '&preview=1';
+                        }
+
                         function copyLink(id) {
                             const abs = new URL(mediaUrl(id), window.location.origin).href;
                             if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -183,6 +187,7 @@
                             let html = '<div style="margin-top:20px;"><h2>Done!</h2>';
                             for (const item of media) {
                                 const link = mediaUrl(item.Id);
+                                const preview = previewUrl(item.Id);
                                 const kind = item.IsAudio ? 'AUDIO' : 'VIDEO';
                                 const saveName = item.DownloadName || item.Name;
                                 html += '<div class="mb-4 text-left result-card">';
@@ -191,9 +196,9 @@
                                 html += '<a style="color: dodgerblue" href="' + escapeHtml(link) + '">' + escapeHtml(item.Name) + '</a>';
                                 html += '<small class="d-block">' + escapeHtml(item.HumanSize) + '</small>';
                                 if (item.IsAudio) {
-                                    html += '<audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(link) + '" /></audio>';
+                                    html += '<audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(preview) + '" /></audio>';
                                 } else {
-                                    html += '<video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(link) + '" type="video/mp4" /></video>';
+                                    html += '<video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;"><source src="' + escapeHtml(preview) + '" type="video/mp4" /></video>';
                                 }
                                 html += '<div class="mt-2 result-actions"><a class="btn btn-sm btn-success" href="' + escapeHtml(link) + '" download="' + escapeHtml(saveName) + '">Download</a> ' +
                                     '<button class="btn btn-sm btn-outline-light" data-copy="' + escapeHtml(item.Id) + '">Copy link</button> ' +
@@ -298,11 +303,11 @@
                         <small class="d-block">{{.HumanSize}}</small>
                         {{ if .IsAudio }}
                         <audio controls preload="none" class="mt-2" style="width:100%;max-width:560px;">
-                            <source src="/download?id={{.Id}}" />
+                            <source src="/download?id={{.Id}}&amp;preview=1" />
                         </audio>
                         {{ else }}
                         <video controls loop preload="metadata" class="mt-2" style="width:100%;max-width:560px;">
-                            <source src="/download?id={{.Id}}" type="video/mp4" />
+                            <source src="/download?id={{.Id}}&amp;preview=1" type="video/mp4" />
                         </video>
                         {{ end }}
                         <div class="mt-2 result-actions">

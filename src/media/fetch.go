@@ -659,6 +659,122 @@ func getMediaDirectory(id string) string {
 	return downloadDir + id + "/"
 }
 
+var pendingDeletes = struct {
+	mu sync.Mutex
+	m  map[string]*time.Timer
+}{m: map[string]*time.Timer{}}
+
+// activeServes counts in-flight streams per id so cleanup never removes media a
+// user is currently watching or downloading.
+var activeServes = struct {
+	mu sync.Mutex
+	m  map[string]int
+}{m: map[string]int{}}
+
+func markServing(id string) {
+	if id == "" {
+		return
+	}
+	activeServes.mu.Lock()
+	activeServes.m[id]++
+	activeServes.mu.Unlock()
+}
+
+func unmarkServing(id string) {
+	if id == "" {
+		return
+	}
+	activeServes.mu.Lock()
+	if activeServes.m[id] <= 1 {
+		delete(activeServes.m, id)
+	} else {
+		activeServes.m[id]--
+	}
+	activeServes.mu.Unlock()
+}
+
+func isServing(id string) bool {
+	activeServes.mu.Lock()
+	defer activeServes.mu.Unlock()
+	return activeServes.m[id] > 0
+}
+
+func servingIDs() map[string]bool {
+	activeServes.mu.Lock()
+	defer activeServes.mu.Unlock()
+	ids := make(map[string]bool, len(activeServes.m))
+	for id := range activeServes.m {
+		ids[id] = true
+	}
+	return ids
+}
+
+// purgeAfterDownload reports whether fully delivered media is removed from the
+// server. Default true ("nothing stored"); set MR_PURGE_AFTER_DOWNLOAD=false to
+// restore the old cache-and-reuse behaviour.
+func purgeAfterDownload() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("MR_PURGE_AFTER_DOWNLOAD")))
+	return raw != "false" && raw != "0" && raw != "no"
+}
+
+// serveGrace is how long a downloaded file lingers so an immediate replay or a
+// follow-up preview still resolves. MR_DELETE_AFTER_SERVE_SECONDS, default 90.
+func serveGrace() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("MR_DELETE_AFTER_SERVE_SECONDS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 && v <= 86400 {
+			return time.Duration(v) * time.Second
+		}
+	}
+	return 90 * time.Second
+}
+
+// scheduleMediaDeletion removes a media directory once a complete download has
+// been delivered. Deletion is usage-driven: it only runs after the user has
+// actually received the file, and only after a grace period so watching or
+// re-downloading right after still works.
+func scheduleMediaDeletion(id string) {
+	if id == "" || !purgeAfterDownload() {
+		return
+	}
+
+	pendingDeletes.mu.Lock()
+	if _, exists := pendingDeletes.m[id]; exists {
+		pendingDeletes.mu.Unlock()
+		return
+	}
+	pendingDeletes.m[id] = time.AfterFunc(serveGrace(), func() {
+		pendingDeletes.mu.Lock()
+		delete(pendingDeletes.m, id)
+		pendingDeletes.mu.Unlock()
+
+		// A fresh download for the same id is in flight: keep the folder.
+		if activeJobIDs()[id] || isServing(id) {
+			log.Info().Msgf("Skipping purge of %s: media is in use", id)
+			return
+		}
+
+		dir := getMediaDirectory(id)
+		if err := os.RemoveAll(dir); err != nil {
+			log.Error().Err(err).Msgf("Failed to purge served media %s", dir)
+			return
+		}
+		removeDownloadJob(id)
+		log.Info().Msgf("Purged served media %s", id)
+	})
+	pendingDeletes.mu.Unlock()
+}
+
+// cancelMediaDeletion aborts a pending purge, e.g. when the same media is
+// requested again before the grace period elapses.
+func cancelMediaDeletion(id string) {
+	pendingDeletes.mu.Lock()
+	if t, ok := pendingDeletes.m[id]; ok {
+		t.Stop()
+		delete(pendingDeletes.m, id)
+	}
+	pendingDeletes.mu.Unlock()
+}
+
 // id is expected to be validated prior to calling this func
 func getAllFilesForId(id string) ([]Media, error) {
 	root := getMediaDirectory(id)
@@ -867,8 +983,11 @@ func CleanOldCache() {
 
 	threshold := time.Now().Add(-cacheTTL())
 	removed := 0
-	// Never touch folders belonging to in-flight downloads.
+	// Never touch folders belonging to in-flight downloads or streams.
 	active := activeJobIDs()
+	for id := range servingIDs() {
+		active[id] = true
+	}
 
 	for _, entry := range entries {
 		if !entry.IsDir() {

@@ -47,6 +47,23 @@ container is rejected and the app never starts.
 * `MR_CACHE_TTL_HOURS` how long finished downloads stay on disk. Defaults to `6`
 * `MR_MAX_CACHE_MB` caps total cache size, oldest deleted first. Defaults to `2048` (`0` = no quota)
 * `MR_MAX_FILESIZE` max single download passed to yt-dlp (e.g. `500M`, `2G`). Defaults to `500M`
+* `MR_PURGE_AFTER_DOWNLOAD` delete media from the server once it has been fully downloaded. Defaults to `true`
+* `MR_DELETE_AFTER_SERVE_SECONDS` grace period after a completed download before purging, so an immediate replay still works. Defaults to `90`
+
+## Storage behaviour
+
+Nothing is kept on the server beyond what is needed to serve a request:
+
+* Media is written to `MR_DOWNLOAD_DIR` while yt-dlp downloads and ffmpeg merges it.
+* A file is deleted only after it has been **fully delivered** to the user. Partial
+  transfers (the in-page player, seeks, aborted downloads) never trigger a purge,
+  and the player always requests with `?preview=1` so watching cannot evict a file.
+* Deletion happens after `MR_DELETE_AFTER_SERVE_SECONDS`, and never while a file is
+  being streamed or a new download of the same URL is in flight.
+* `MR_CACHE_TTL_HOURS` is the backstop for files that are requested but never
+  downloaded; `MR_MAX_CACHE_MB` caps total disk use. Both skip in-use files.
+* Set `MR_PURGE_AFTER_DOWNLOAD=false` to go back to caching results for reuse
+  (repeat requests of the same URL/options then skip yt-dlp entirely).
 
 ## Cookies
 

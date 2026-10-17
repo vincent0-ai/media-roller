@@ -86,6 +86,10 @@ func activeJobIDs() map[string]bool {
 func StartDownloadJob(url string, args map[string]string) *DownloadJob {
 	id := GetMD5Hash(url, args)
 
+	// A (re)download is starting: make sure a pending purge can't remove the
+	// folder it is about to write into.
+	cancelMediaDeletion(id)
+
 	downloadJobRegistry.mu.Lock()
 	job, exists := downloadJobRegistry.jobs[id]
 	if exists {
@@ -130,6 +134,14 @@ func getDownloadJob(id string) (*DownloadJob, bool) {
 	job, ok := downloadJobRegistry.jobs[id]
 	downloadJobRegistry.mu.RUnlock()
 	return job, ok
+}
+
+// removeDownloadJob drops a job once its media has been purged so a later
+// submit of the same URL re-downloads instead of serving a missing file.
+func removeDownloadJob(id string) {
+	downloadJobRegistry.mu.Lock()
+	delete(downloadJobRegistry.jobs, id)
+	downloadJobRegistry.mu.Unlock()
 }
 
 func newDownloadJob(id string, url string, args map[string]string) *DownloadJob {
