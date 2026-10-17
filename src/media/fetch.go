@@ -451,18 +451,7 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 	} else {
 		// Cap height to the requested quality. Remux (not recode) keeps
 		// CPU low; h264 sort keeps max device compatibility.
-		switch requestArgs["quality"] {
-		case "best":
-			defaultArgs["--format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-		case "1080":
-			defaultArgs["--format"] = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best"
-		case "480":
-			defaultArgs["--format"] = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/best"
-		case "360":
-			defaultArgs["--format"] = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]/best"
-		default: // "720"
-			defaultArgs["--format"] = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best"
-		}
+		defaultArgs["--format"] = videoFormatSelector(requestArgs["quality"], preferSingleFile())
 		defaultArgs["--merge-output-format"] = "mp4"
 		defaultArgs["--remux-video"] = "mp4"
 		defaultArgs["--format-sort"] = "codec:h264"
@@ -507,7 +496,7 @@ func downloadMediaWithBrowser(url string, requestArgs map[string]string, browser
 		args = append([]string{"--cookies", cookieFile}, args...)
 	}
 
-	cmd := exec.Command("yt-dlp", args...)
+	cmd := lowPriorityCmd("yt-dlp", args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdoutIn, _ := cmd.StdoutPipe()
@@ -581,7 +570,7 @@ func ensureIosCompatible(id string) error {
 	for _, media := range files {
 		input := getMediaDirectory(id) + media.Name
 		tmp := input + ".ios.tmp.mp4"
-		cmd := exec.Command("ffmpeg", "-y", "-i", input, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", tmp)
+		cmd := lowPriorityCmd("ffmpeg", "-y", "-i", input, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", tmp)
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 		if err := cmd.Run(); err != nil {
@@ -911,6 +900,59 @@ func getDownloadDir() string {
 		return dir
 	}
 	return "downloads/"
+}
+
+// preferSingleFile reports whether yt-dlp should prefer pre-merged mp4 formats
+// (no ffmpeg merge step). Default false; enable with MR_PREFER_SINGLE_FILE=true
+// on a 1-vCPU box to eliminate the merge CPU spike. Capped to 720p in practice.
+func preferSingleFile() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("MR_PREFER_SINGLE_FILE")))
+	return raw == "true" || raw == "1" || raw == "yes"
+}
+
+// niceDownloads reports whether child processes run at low CPU priority.
+// Default true; MR_NICE_DOWNLOADS=false disables.
+func niceDownloads() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("MR_NICE_DOWNLOADS")))
+	return raw != "false" && raw != "0" && raw != "no"
+}
+
+// lowPriorityCmd runs name under `nice -n 19` when available so a heavy merge
+// cannot starve the web server on a single-vCPU box. ffmpeg spawned by yt-dlp
+// inherits the priority. Falls back to a plain command if `nice` is absent.
+func lowPriorityCmd(name string, args ...string) *exec.Cmd {
+	if niceDownloads() {
+		if nicePath, err := exec.LookPath("nice"); err == nil {
+			full := append([]string{"-n", "19", name}, args...)
+			return exec.Command(nicePath, full...)
+		}
+	}
+	return exec.Command(name, args...)
+}
+
+// videoFormatSelector builds the yt-dlp -f expression for a quality cap.
+// When singleFirst is set, pre-merged (audio+video) mp4 formats are preferred
+// so yt-dlp skips the ffmpeg merge entirely; separate video+audio streams stay
+// as the fallback for resolutions that have no combined format.
+func videoFormatSelector(quality string, singleFirst bool) string {
+	cap := "[height<=720]"
+	switch quality {
+	case "best":
+		cap = ""
+	case "1080":
+		cap = "[height<=1080]"
+	case "480":
+		cap = "[height<=480]"
+	case "360":
+		cap = "[height<=360]"
+	}
+	merge := "bestvideo" + cap + "[ext=mp4]+bestaudio[ext=m4a]"
+	combined := "best" + cap + "[ext=mp4]"
+	fallback := "best" + cap
+	if singleFirst {
+		return combined + "/" + merge + "/" + fallback + "/best"
+	}
+	return merge + "/" + combined + "/" + fallback + "/best"
 }
 
 func getEnvVars() map[string]string {

@@ -49,6 +49,8 @@ container is rejected and the app never starts.
 * `MR_MAX_FILESIZE` max single download passed to yt-dlp (e.g. `500M`, `2G`). Defaults to `500M`
 * `MR_PURGE_AFTER_DOWNLOAD` delete media from the server once it has been fully downloaded. Defaults to `true`
 * `MR_DELETE_AFTER_SERVE_SECONDS` grace period after a completed download before purging, so an immediate replay still works. Defaults to `90`
+* `MR_PREFER_SINGLE_FILE` prefer pre-merged mp4 formats so yt-dlp skips the ffmpeg merge step (kills the CPU spike; capped to ~720p). Defaults to `false`
+* `MR_NICE_DOWNLOADS` run yt-dlp/ffmpeg under `nice -n 19` so they can't starve the web server. Defaults to `true`
 
 ## Storage behaviour
 
