@@ -1,62 +1,67 @@
-FROM golang:1.26.4-alpine3.24 AS builder
-
-RUN apk add --no-cache curl
+# ==========================================
+# Stage 1: Build Go Binary
+# ==========================================
+FROM golang:1.26.4-alpine3.24 AS go-builder
 
 WORKDIR /app
 
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY src src
 COPY templates templates
-COPY go.mod go.mod
-COPY go.sum go.sum
 
-RUN go mod download
 RUN CGO_ENABLED=0 go build -o media-roller ./src
 
-# yt-dlp needs python. Pinned to stable 3.13 (3.15 alphas break pip/yt-dlp in prod).
+
+# ==========================================
+# Stage 2: Build Python Wheels & C Extensions
+# ==========================================
+FROM python:3.13-alpine AS py-builder
+
+RUN apk add --no-cache gcc musl-dev python3-dev libffi-dev
+
+WORKDIR /install
+RUN pip install --prefix=/install/wheels --no-cache-dir curl_cffi --upgrade --pre
+RUN pip install --prefix=/install/wheels --no-cache-dir -U yt-dlp-ejs
+
+
+# ==========================================
+# Stage 3: Final Minimal Runtime Image
+# ==========================================
 FROM python:3.13-alpine
 
-# This is where the downloaded files will be saved in the container.
 ENV MR_DOWNLOAD_DIR="/download"
-# Default listen port. Platforms like Railway/Render/Dokploy/Coolify inject
-# PORT at runtime — the app respects MR_PORT first, then PORT (see src/main.go).
 ENV PORT="3000"
 
+# Install ONLY necessary runtime packages (no compilers/dev headers)
 RUN apk add --update --no-cache \
-    # https://github.com/yt-dlp/yt-dlp/issues/14404 \
     deno \
     curl \
-    gcc \
-    musl-dev \
-    python3-dev \
-    libffi-dev
+    ca-certificates
 
-# https://hub.docker.com/r/mwader/static-ffmpeg/tags
-# https://github.com/wader/static-ffmpeg
-COPY --from=mwader/static-ffmpeg:8.0 /ffmpeg  /usr/local/bin/
+# Copy static binaries & built artifacts
+COPY --from=mwader/static-ffmpeg:8.0 /ffmpeg /usr/local/bin/
 COPY --from=mwader/static-ffmpeg:8.0 /ffprobe /usr/local/bin/
-COPY --from=builder /app/media-roller /app/media-roller
+COPY --from=go-builder /app/media-roller /app/media-roller
+COPY --from=py-builder /install/wheels /usr/local
+
 COPY templates /app/templates
 COPY static /app/static
 
 WORKDIR /app
-
 RUN mkdir -p /download
 
-EXPOSE 3000
-
-RUN pip install curl_cffi --upgrade --pre
-RUN pip install -U yt-dlp-ejs
-
-# Get new releases here https://github.com/yt-dlp/yt-dlp/releases
+# Download & verify standalone yt-dlp executable
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp -o /usr/local/bin/yt-dlp && \
-    echo "3bda0968a01cde70d26720653003b28553c71be14dcb2e5f4c24e9921fdad745 /usr/local/bin/yt-dlp" | sha256sum -c - && \
-    chmod a+rx /usr/local/bin/yt-dlp
-
-RUN yt-dlp --update --update-to nightly
+    echo "3bda0968a01cde70d26720653003b28553c71be14dcb2e5f4c24e9921fdad745  /usr/local/bin/yt-dlp" | sha256sum -c - && \
+    chmod a+rx /usr/local/bin/yt-dlp && \
+    yt-dlp --update --update-to nightly
 
 # Sanity check
-RUN yt-dlp --version && \
-    ffmpeg -version
+RUN yt-dlp --version && ffmpeg -version
+
+EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -f http://localhost:${PORT:-3000}/health || exit 1
