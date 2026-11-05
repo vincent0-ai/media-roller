@@ -61,11 +61,16 @@ jobs:
 
           # Body is written to a file and never printed: the response can echo the
           # webhook path, which is the deploy token.
+
+          # Cloudflare Bot Fight Mode challenges curl's default user-agent; send a
+          # browser UA so the webhook reaches Dokploy. A WAF skip rule for the
+          # deploy path is the durable fix if Cloudflare tightens its heuristics.
           body_file="$(mktemp)"
           status=$(curl --silent --show-error --output "$body_file" --write-out '%{http_code}' \
             --retry 2 --retry-delay 5 --retry-connrefused --max-time 60 \
             -X POST "$DOKPLOY_WEBHOOK_URL" \
-            -H "Content-Type: application/json") || status=000
+            -H "Content-Type: application/json" \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") || status=000
 
           if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
             echo "Dokploy accepted the deployment (HTTP $status)."
